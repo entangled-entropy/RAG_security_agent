@@ -17,7 +17,9 @@ import urllib.parse
 import html
 import re
 import base64
+import json
 from typing import Tuple, Dict, List
+from stack_detector import detect_stack_from_traffic
 
 # Patterns of keys/values to redact from headers/query/body when found
 SENSITIVE_KEYWORDS = [
@@ -332,6 +334,7 @@ def normalize_chunk_text(chunk_text: str, chunk_type: str = None) -> Tuple[str, 
     Higher-level normalizer used by collectors:
       - Calls preprocess_payload(chunk_text, chunk_type) to get normalized text
       - Computes suspicion_score and matched tags
+      - Performs stack detection for headers and HTML content
       - Optionally annotates suspicious tokens in the normalized text
     Returns:
       (normalized_text, meta_dict)
@@ -339,6 +342,7 @@ def normalize_chunk_text(chunk_text: str, chunk_type: str = None) -> Tuple[str, 
           - suspicion_score: int
           - suspicious_tags: list[str]
           - suspicious: bool (score > 0)
+          - stack_detection: dict (if applicable)
     """
     # keep the original normalization
     normalized = preprocess_payload(chunk_text, chunk_type)
@@ -355,6 +359,88 @@ def normalize_chunk_text(chunk_text: str, chunk_type: str = None) -> Tuple[str, 
         "suspicious_tags": tags,
         "chunk_type": chunk_type or "unknown"
     }
+
+    # Perform stack detection for headers and HTML content
+    if chunk_type in ["headers", "body"] and chunk_text.strip():
+        try:
+            if chunk_type == "headers":
+                stack_result = detect_stack_from_traffic(headers_text=chunk_text)
+            elif chunk_type == "body":
+                # Check if body contains HTML
+                if "<html" in chunk_text.lower() or "<!doctype" in chunk_text.lower():
+                    stack_result = detect_stack_from_traffic(html_content=chunk_text)
+                else:
+                    # Check if it's POST data
+                    if chunk_text.strip().startswith('{') or '=' in chunk_text and '&' in chunk_text:
+                        stack_result = detect_stack_from_traffic(post_data=chunk_text)
+                    else:
+                        stack_result = {}
+            else:
+                stack_result = {}
+            
+            # Add stack detection results to metadata (flattened for JSON safety)
+            if stack_result and stack_result.get("total_detected", 0) > 0:
+                meta["stack_detection"] = {
+                    "total_detected": stack_result.get("total_detected", 0),
+                    "confidence": stack_result.get("confidence", 0.0),
+                    "detection_methods": stack_result.get("detection_methods", []),
+                    "has_standard_libs": len(stack_result.get("standard_libraries", [])) > 0,
+                    "has_custom_libs": len(stack_result.get("custom_libraries", [])) > 0
+                }
+                
+                # Add top component if available
+                top_component = stack_result.get("top_component")
+                if top_component:
+                    meta["top_component"] = {
+                        "name": top_component.get("name", ""),
+                        "version": top_component.get("version", ""),
+                        "type": top_component.get("type", ""),
+                        "confidence": top_component.get("confidence", 0.0),
+                        "is_vulnerable": top_component.get("vulnerability_check", {}).get("is_vulnerable", False)
+                    }
+                
+                # Add component candidates (flattened)
+                component_candidates = stack_result.get("component_candidates", [])
+                if component_candidates:
+                    meta["component_candidates"] = json.dumps([
+                        {
+                            "name": comp.get("name", ""),
+                            "version": comp.get("version", ""),
+                            "category": comp.get("category", ""),
+                            "confidence": comp.get("confidence", 0.0),
+                            "is_vulnerable": comp.get("vulnerability_check", {}).get("is_vulnerable", False)
+                        }
+                        for comp in component_candidates[:10]  # Limit to first 10
+                    ])
+                
+                # Add security analysis
+                security_analysis = stack_result.get("security_analysis", {})
+                if security_analysis:
+                    meta["security_analysis"] = {
+                        "total_security_issues": security_analysis.get("total_security_issues", 0),
+                        "high_severity_issues": security_analysis.get("high_severity_issues", 0),
+                        "medium_severity_issues": security_analysis.get("medium_severity_issues", 0),
+                        "security_risk_score": security_analysis.get("security_risk_score", 0),
+                        "has_vulnerabilities": security_analysis.get("has_vulnerabilities", False),
+                        "has_credentials": security_analysis.get("credential_analysis", {}).get("has_credentials", False),
+                        "has_post_attacks": security_analysis.get("post_data_analysis", {}).get("has_attacks", False)
+                    }
+                    
+                    # Add security issues summary (flattened)
+                    security_issues = security_analysis.get("security_issues", [])
+                    if security_issues:
+                        meta["security_issues_summary"] = json.dumps([
+                            {
+                                "type": issue.get("type", ""),
+                                "severity": issue.get("severity", ""),
+                                "description": issue.get("description", issue.get("reason", ""))[:100]
+                            }
+                            for issue in security_issues[:5]  # Limit to first 5
+                        ])
+                
+        except Exception as e:
+            # Don't fail the entire process if stack detection fails
+            meta["stack_detection_error"] = str(e)
 
     return annotated, meta
 
