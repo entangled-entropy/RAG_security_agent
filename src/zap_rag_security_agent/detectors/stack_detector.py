@@ -9,6 +9,8 @@ Features:
 - Version detection for standard libraries
 - Distinguish between standard and custom libraries
 - JSON-safe metadata output for ChromaDB storage
+- Comprehensive outdated version detection using version database
+- Security vulnerability assessment
 """
 
 import re
@@ -17,6 +19,7 @@ import requests
 from typing import Dict, List, Tuple, Optional, Any
 from urllib.parse import urlparse
 from Wappalyzer import Wappalyzer, WebPage
+from ..data.version_database import get_version_database
 
 
 class StackDetector:
@@ -28,6 +31,7 @@ class StackDetector:
     def __init__(self):
         """Initialize the Wappalyzer instance."""
         self.wappalyzer = Wappalyzer.latest()
+        self.version_db = get_version_database()
         
         # Security patterns for credential detection
         self.credential_patterns = {
@@ -51,26 +55,6 @@ class StackDetector:
             'sql_concatenation': re.compile(r'["\'].*["\']\s*\+\s*[^;]+', re.I),
             'xss_vulnerable': re.compile(r'innerHTML|outerHTML|document\.write', re.I),
             'unsafe_eval': re.compile(r'eval\s*\(|Function\s*\(|setTimeout\s*\([^,)]*["\']', re.I),
-        }
-        
-        # Known vulnerable versions (simplified - in production, use CVE databases)
-        self.vulnerable_versions = {
-            'jquery': {
-                'vulnerable': ['1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.4.0', '1.5.0', '1.6.0', '1.7.0', '1.8.0', '1.9.0', '1.10.0', '1.11.0', '1.12.0'],
-                'min_safe': '3.0.0'
-            },
-            'bootstrap': {
-                'vulnerable': ['3.0.0', '3.1.0', '3.2.0', '3.3.0', '3.4.0', '4.0.0', '4.1.0', '4.2.0', '4.3.0', '4.4.0', '4.5.0', '4.6.0'],
-                'min_safe': '5.0.0'
-            },
-            'angular': {
-                'vulnerable': ['1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.4.0', '1.5.0', '1.6.0', '1.7.0', '1.8.0'],
-                'min_safe': '2.0.0'
-            },
-            'vue': {
-                'vulnerable': ['1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.4.0', '1.5.0', '1.6.0', '1.7.0', '1.8.0', '1.9.0', '1.10.0'],
-                'min_safe': '2.0.0'
-            }
         }
     
     def detect_from_headers(self, headers_text: str, url: str = "") -> Dict[str, Any]:
@@ -401,7 +385,7 @@ class StackDetector:
             return self._error_result(f"Meta tag analysis failed: {str(e)}")
     
     def _process_wappalyzer_results(self, results: Dict, detection_method: str) -> Dict[str, Any]:
-        """Process Wappalyzer results into our standardized format."""
+        """Process Wappalyzer results into our standardized format with outdated version detection."""
         try:
             if not results:
                 return self._empty_result()
@@ -409,6 +393,7 @@ class StackDetector:
             detected_techs = {}
             standard_libs = []
             custom_libs = []
+            outdated_components = []
             
             for tech_name, tech_data in results.items():
                 if isinstance(tech_data, dict):
@@ -422,11 +407,20 @@ class StackDetector:
                     # Join categories if multiple
                     category = ', '.join(categories) if categories else ''
                     
+                    # Get security status for this technology
+                    security_status = self._get_security_status(tech_name, version)
+                    
                     tech_info = {
                         "name": tech_name,
                         "version": version,
                         "category": category,
-                        "confidence": confidence
+                        "confidence": confidence,
+                        "is_vulnerable": security_status['is_vulnerable'],
+                        "is_outdated": security_status['is_outdated'],
+                        "latest_version": security_status['latest_version'],
+                        "min_safe_version": security_status['min_safe_version'],
+                        "lts_version": security_status['lts_version'],
+                        "security_status": security_status['security_status']
                     }
                     
                     # Determine if it's standard or custom
@@ -435,15 +429,21 @@ class StackDetector:
                     else:
                         custom_libs.append(tech_info)
                     
+                    # Add to outdated components if applicable
+                    if security_status['is_outdated'] or security_status['is_vulnerable']:
+                        outdated_components.append(tech_info)
+                    
                     detected_techs[tech_name] = tech_info
             
             return {
                 "detected_technologies": detected_techs,
                 "standard_libraries": standard_libs,
                 "custom_libraries": custom_libs,
+                "outdated_components": outdated_components,
                 "detection_method": detection_method,
                 "confidence": max([lib.get("confidence", 0.0) for lib in standard_libs + custom_libs], default=0.0),
-                "total_detected": len(detected_techs)
+                "total_detected": len(detected_techs),
+                "total_outdated": len(outdated_components)
             }
             
         except Exception as e:
@@ -567,27 +567,32 @@ class StackDetector:
         }
     
     def _check_vulnerability(self, tech_name: str, version: str) -> bool:
-        """Check if a technology version is vulnerable."""
+        """Check if a technology version is vulnerable using version database."""
         if not version or not tech_name:
             return False
         
-        tech_lower = tech_name.lower()
+        return self.version_db.is_vulnerable(tech_name, version)
+    
+    def _check_outdated(self, tech_name: str, version: str) -> Tuple[bool, str, str]:
+        """Check if a technology version is outdated using version database."""
+        if not version or not tech_name:
+            return False, "", ""
         
-        # Check against known vulnerable versions
-        for vuln_tech, vuln_info in self.vulnerable_versions.items():
-            if vuln_tech.lower() in tech_lower:
-                vulnerable_versions = vuln_info.get('vulnerable', [])
-                min_safe = vuln_info.get('min_safe', '')
-                
-                # Check if current version is in vulnerable list
-                if version in vulnerable_versions:
-                    return True
-                
-                # Check if version is below minimum safe version
-                if min_safe and self._version_compare(version, min_safe) < 0:
-                    return True
+        return self.version_db.is_outdated(tech_name, version)
+    
+    def _get_security_status(self, tech_name: str, version: str) -> Dict[str, Any]:
+        """Get comprehensive security status for a technology version."""
+        if not version or not tech_name:
+            return {
+                'is_outdated': False,
+                'is_vulnerable': False,
+                'latest_version': '',
+                'min_safe_version': '',
+                'lts_version': '',
+                'security_status': 'unknown'
+            }
         
-        return False
+        return self.version_db.get_security_status(tech_name, version)
     
     def _version_compare(self, version1: str, version2: str) -> int:
         """Compare two version strings. Returns -1 if v1 < v2, 0 if equal, 1 if v1 > v2."""
@@ -758,6 +763,7 @@ def detect_stack_from_traffic(headers_text: str = "", html_content: str = "",
     all_technologies = {}
     all_standard_libs = []
     all_custom_libs = []
+    all_outdated_components = []
     total_confidence = 0.0
     detection_methods = []
     combined_security_analysis = {}
@@ -768,6 +774,7 @@ def detect_stack_from_traffic(headers_text: str = "", html_content: str = "",
             all_technologies.update(result.get("detected_technologies", {}))
             all_standard_libs.extend(result.get("standard_libraries", []))
             all_custom_libs.extend(result.get("custom_libraries", []))
+            all_outdated_components.extend(result.get("outdated_components", []))
             total_confidence += result.get("confidence", 0.0)
         
         # Combine security analysis from all methods
@@ -787,11 +794,14 @@ def detect_stack_from_traffic(headers_text: str = "", html_content: str = "",
     # Calculate overall confidence
     avg_confidence = total_confidence / len(detection_methods) if detection_methods else 0.0
     
-    # Add vulnerability analysis to all components
-    detector = StackDetector()
-    all_components = all_standard_libs + all_custom_libs
-    for comp in all_components:
-        comp["is_vulnerable"] = detector._check_vulnerability(comp.get("name", ""), comp.get("version", ""))
+    # Remove duplicates from outdated components
+    seen_outdated = set()
+    unique_outdated = []
+    for comp in all_outdated_components:
+        comp_key = (comp.get("name", ""), comp.get("version", ""))
+        if comp_key not in seen_outdated:
+            seen_outdated.add(comp_key)
+            unique_outdated.append(comp)
     
     # Determine top component
     top_component = None
@@ -804,7 +814,9 @@ def detect_stack_from_traffic(headers_text: str = "", html_content: str = "",
             "category": top_standard.get("category", ""),
             "type": "standard",
             "confidence": top_standard.get("confidence", 0.0),
-            "is_vulnerable": top_standard.get("is_vulnerable", False)
+            "is_vulnerable": top_standard.get("is_vulnerable", False),
+            "is_outdated": top_standard.get("is_outdated", False),
+            "security_status": top_standard.get("security_status", "unknown")
         }
     elif all_custom_libs:
         top_custom = max(all_custom_libs, key=lambda x: x.get("confidence", 0.0))
@@ -814,17 +826,21 @@ def detect_stack_from_traffic(headers_text: str = "", html_content: str = "",
             "category": top_custom.get("category", ""),
             "type": "custom",
             "confidence": top_custom.get("confidence", 0.0),
-            "is_vulnerable": top_custom.get("is_vulnerable", False)
+            "is_vulnerable": top_custom.get("is_vulnerable", False),
+            "is_outdated": top_custom.get("is_outdated", False),
+            "security_status": top_custom.get("security_status", "unknown")
         }
     
     result = {
         "detected_technologies": all_technologies,
         "standard_libraries": all_standard_libs,
         "custom_libraries": all_custom_libs,
+        "outdated_components": unique_outdated,
         "top_component": top_component,
         "detection_methods": detection_methods,
         "confidence": avg_confidence,
         "total_detected": len(all_technologies),
+        "total_outdated": len(unique_outdated),
         "component_candidates": all_standard_libs + all_custom_libs
     }
     

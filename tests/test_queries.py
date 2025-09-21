@@ -399,6 +399,74 @@ class QueryTester:
                     except (json.JSONDecodeError, AttributeError, ValueError, SyntaxError):
                         analysis_lines.append(f"Security Issues: {issues_summary}")
             
+            # Enhanced technologies (with version info)
+            if 'enhanced_technologies' in analysis_data:
+                enhanced_techs = analysis_data['enhanced_technologies']
+                if enhanced_techs:
+                    try:
+                        import json
+                        # Handle both old format (Python dict string) and new format (JSON)
+                        if isinstance(enhanced_techs, str):
+                            if enhanced_techs.startswith('{') and "'" in enhanced_techs and '"' not in enhanced_techs:
+                                # Old format: Python dict string with single quotes
+                                import ast
+                                tech_data = ast.literal_eval(enhanced_techs)
+                            else:
+                                # New format: JSON
+                                tech_data = json.loads(enhanced_techs)
+                        else:
+                            tech_data = enhanced_techs
+                            
+                        if tech_data:
+                            analysis_lines.append("Enhanced Technology Analysis:")
+                            for tech_name, tech_info in list(tech_data.items())[:5]:  # Show top 5
+                                if isinstance(tech_info, dict):
+                                    version = tech_info.get('version', 'N/A')
+                                    latest_version = tech_info.get('latest_version', 'N/A')
+                                    security_status = tech_info.get('security_status', 'unknown')
+                                    is_vulnerable = tech_info.get('is_vulnerable', False)
+                                    is_outdated = tech_info.get('is_outdated', False)
+                                    
+                                    if version and version != 'N/A' and latest_version and latest_version != 'N/A':
+                                        status_icon = "⚠️ VULNERABLE" if is_vulnerable else "🔄 OUTDATED" if is_outdated else "✅ CURRENT"
+                                        analysis_lines.append(f"  - {tech_name} v{version} → v{latest_version} {status_icon}")
+                                    else:
+                                        analysis_lines.append(f"  - {tech_name} v{version} (no version info)")
+                    except (json.JSONDecodeError, AttributeError, ValueError, SyntaxError):
+                        analysis_lines.append(f"Enhanced Technologies: {enhanced_techs}")
+            
+            # Outdated components
+            if 'outdated_components' in analysis_data:
+                outdated_components = analysis_data['outdated_components']
+                if outdated_components:
+                    try:
+                        import json
+                        # Handle both old format (Python dict string) and new format (JSON)
+                        if isinstance(outdated_components, str):
+                            if outdated_components.startswith('[') and "'" in outdated_components and '"' not in outdated_components:
+                                # Old format: Python list string with single quotes
+                                import ast
+                                outdated_data = ast.literal_eval(outdated_components)
+                            else:
+                                # New format: JSON
+                                outdated_data = json.loads(outdated_components)
+                        else:
+                            outdated_data = outdated_components
+                            
+                        if outdated_data:
+                            analysis_lines.append("Outdated Components:")
+                            for comp in outdated_data[:5]:  # Show top 5
+                                name = comp.get('name', 'Unknown')
+                                current_version = comp.get('version', 'N/A')
+                                latest_version = comp.get('latest_version', 'N/A')
+                                security_status = comp.get('security_status', 'unknown')
+                                is_vulnerable = comp.get('is_vulnerable', False)
+                                
+                                status_icon = "⚠️ VULNERABLE" if is_vulnerable else "🔄 OUTDATED" if security_status == 'outdated' else "✅ CURRENT"
+                                analysis_lines.append(f"  - {name} v{current_version} → v{latest_version} {status_icon}")
+                    except (json.JSONDecodeError, AttributeError, ValueError, SyntaxError):
+                        analysis_lines.append(f"Outdated Components: {outdated_components}")
+            
             # Stack detection errors
             if 'stack_detection_error' in analysis_data:
                 error = analysis_data['stack_detection_error']
@@ -474,7 +542,7 @@ class QueryTester:
             print(f"Unique HTTP requests: {unique_groups}")
             
             # Check for analysis metadata
-            analysis_fields = ['suspicion_score', 'stack_detection', 'top_component', 'component_candidates', 'security_analysis']
+            analysis_fields = ['suspicion_score', 'stack_detection', 'top_component', 'component_candidates', 'security_analysis', 'enhanced_technologies', 'total_outdated']
             print(f"\nAnalysis metadata availability:")
             for field in analysis_fields:
                 cur.execute(f"SELECT COUNT(*) FROM embedding_metadata WHERE key = '{field}'")
@@ -501,9 +569,12 @@ class QueryTester:
         print("\nSuggested queries for stack detection:")
         print("  - 'technologies detected' - Find requests with technology detection")
         print("  - 'vulnerable components' - Find vulnerable technologies")
+        print("  - 'outdated versions' - Find outdated technology versions")
         print("  - 'PHP nginx' - Find PHP and nginx usage")
         print("  - 'jQuery Bootstrap' - Find frontend frameworks")
         print("  - 'security issues' - Find security problems")
+        print("  - 'jQuery 1.12' - Find specific outdated versions")
+        print("  - 'Bootstrap 3.4' - Find outdated Bootstrap versions")
         print("=" * 60)
         
         # Default settings

@@ -60,6 +60,7 @@ class SecurityAnalysisAgent:
             "Use memory context to detect vulnerabilities, exposed secrets, "
             "outdated components, and suspicious patterns. "
             "Provide concise, actionable answers."
+            "check library version is outdated or has known exploits and CVEs and alert"
         )
     
     async def initialize(self) -> None:

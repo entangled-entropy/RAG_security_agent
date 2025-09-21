@@ -1,5 +1,5 @@
 normalisation.
-version Detection
+version Detection is done in stack_detector.py
 reconstruction
 
 test queries
