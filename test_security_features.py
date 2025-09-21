@@ -12,8 +12,10 @@ This script tests the enhanced security features including:
 
 import asyncio
 import json
-from preprocess import normalize_chunk_text
-from stack_detector import detect_stack_from_traffic, StackDetector
+
+# Import from new modular structure
+from src.zap_rag_security_agent.preprocessing.normalizer import normalize_chunk_text
+from src.zap_rag_security_agent.detectors.stack_detector import detect_stack_from_traffic, StackDetector
 
 
 def test_version_vulnerability_detection():

@@ -19,7 +19,7 @@ import re
 import base64
 import json
 from typing import Tuple, Dict, List
-from stack_detector import detect_stack_from_traffic
+from ..detectors.stack_detector import detect_stack_from_traffic
 
 # Patterns of keys/values to redact from headers/query/body when found
 SENSITIVE_KEYWORDS = [
@@ -344,6 +344,10 @@ def normalize_chunk_text(chunk_text: str, chunk_type: str = None) -> Tuple[str, 
           - suspicious: bool (score > 0)
           - stack_detection: dict (if applicable)
     """
+    # Handle None input
+    if chunk_text is None:
+        chunk_text = ""
+    
     # keep the original normalization
     normalized = preprocess_payload(chunk_text, chunk_type)
 

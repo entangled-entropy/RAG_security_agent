@@ -150,7 +150,7 @@ class StackDetector:
     
     def detect_from_script_src(self, script_srcs: List[str]) -> Dict[str, Any]:
         """
-        Detect technologies from script src URLs with security analysis.
+        Detect technologies from script src URLs.
         
         Args:
             script_srcs: List of script src URLs
@@ -165,7 +165,6 @@ class StackDetector:
             detected_techs = {}
             custom_libs = []
             standard_libs = []
-            security_issues = []
             
             for src in script_srcs:
                 if not src:
@@ -176,47 +175,30 @@ class StackDetector:
                 if not lib_name:
                     continue
                 
-                version = self._extract_version_from_url(src)
-                
                 # Check if it's a known CDN or standard library
                 is_standard = self._is_standard_library(src, lib_name)
                 
-                # Check for version vulnerabilities
-                vuln_check = self.check_version_vulnerability(lib_name, version)
-                
-                lib_info = {
-                    "name": lib_name,
-                    "src": src,
-                    "version": version,
-                    "vulnerability_check": vuln_check
-                }
-                
                 if is_standard:
-                    lib_info["cdn"] = self._detect_cdn(src)
-                    standard_libs.append(lib_info)
+                    standard_libs.append({
+                        "name": lib_name,
+                        "src": src,
+                        "version": self._extract_version_from_url(src),
+                        "cdn": self._detect_cdn(src)
+                    })
                 else:
-                    custom_libs.append(lib_info)
-                
-                # Add security issues if vulnerable
-                if vuln_check.get("is_vulnerable", False):
-                    security_issues.append({
-                        "type": "vulnerable_version",
-                        "library": lib_name,
-                        "version": version,
-                        "reason": vuln_check.get("reason", "Unknown vulnerability"),
-                        "severity": vuln_check.get("severity", "medium"),
-                        "min_safe_version": vuln_check.get("min_safe_version", "Unknown")
+                    custom_libs.append({
+                        "name": lib_name,
+                        "src": src,
+                        "version": self._extract_version_from_url(src)
                     })
             
             return {
                 "detected_technologies": detected_techs,
                 "standard_libraries": standard_libs,
                 "custom_libraries": custom_libs,
-                "security_issues": security_issues,
                 "detection_method": "script_src",
                 "confidence": 0.8 if standard_libs or custom_libs else 0.0,
-                "total_detected": len(standard_libs) + len(custom_libs),
-                "has_vulnerabilities": len(security_issues) > 0
+                "total_detected": len(standard_libs) + len(custom_libs)
             }
             
         except Exception as e:
@@ -262,7 +244,7 @@ class StackDetector:
             return self._error_result(f"Meta tag analysis failed: {str(e)}")
     
     def _process_wappalyzer_results(self, results: Dict, detection_method: str) -> Dict[str, Any]:
-        """Process Wappalyzer results into our standardized format with security analysis."""
+        """Process Wappalyzer results into our standardized format."""
         try:
             if not results:
                 return self._empty_result()
@@ -270,7 +252,6 @@ class StackDetector:
             detected_techs = {}
             standard_libs = []
             custom_libs = []
-            security_issues = []
             
             for tech_name, tech_data in results.items():
                 if isinstance(tech_data, dict):
@@ -279,27 +260,12 @@ class StackDetector:
                     category = tech_data.get('category', '')
                     confidence = tech_data.get('confidence', 0.0)
                     
-                    # Check for version vulnerabilities
-                    vuln_check = self.check_version_vulnerability(tech_name, version)
-                    
                     tech_info = {
                         "name": tech_name,
                         "version": version,
                         "category": category,
-                        "confidence": confidence,
-                        "vulnerability_check": vuln_check
+                        "confidence": confidence
                     }
-                    
-                    # Add security issues if vulnerable
-                    if vuln_check.get("is_vulnerable", False):
-                        security_issues.append({
-                            "type": "vulnerable_version",
-                            "library": tech_name,
-                            "version": version,
-                            "reason": vuln_check.get("reason", "Unknown vulnerability"),
-                            "severity": vuln_check.get("severity", "medium"),
-                            "min_safe_version": vuln_check.get("min_safe_version", "Unknown")
-                        })
                     
                     # Determine if it's standard or custom
                     if self._is_standard_technology(tech_name, category):
@@ -313,11 +279,9 @@ class StackDetector:
                 "detected_technologies": detected_techs,
                 "standard_libraries": standard_libs,
                 "custom_libraries": custom_libs,
-                "security_issues": security_issues,
                 "detection_method": detection_method,
                 "confidence": max([lib.get("confidence", 0.0) for lib in standard_libs + custom_libs], default=0.0),
-                "total_detected": len(detected_techs),
-                "has_vulnerabilities": len(security_issues) > 0
+                "total_detected": len(detected_techs)
             }
             
         except Exception as e:
@@ -413,195 +377,6 @@ class StackDetector:
         
         return None
     
-    def check_version_vulnerability(self, lib_name: str, version: str) -> Dict[str, Any]:
-        """
-        Check if a library version is vulnerable.
-        
-        Args:
-            lib_name: Name of the library
-            version: Version string
-            
-        Returns:
-            Dictionary with vulnerability information
-        """
-        if not version or not lib_name:
-            return {"is_vulnerable": False, "reason": "No version or library name"}
-        
-        lib_key = lib_name.lower().replace('-', '').replace('_', '').replace('.', '')
-        
-        # Check against known vulnerable versions
-        for lib, vuln_info in self.vulnerable_versions.items():
-            if lib in lib_key or lib_key in lib:
-                if version in vuln_info['vulnerable']:
-                    return {
-                        "is_vulnerable": True,
-                        "reason": f"Known vulnerable version {version}",
-                        "min_safe_version": vuln_info['min_safe'],
-                        "severity": "high"
-                    }
-                elif self._compare_versions(version, vuln_info['min_safe']) < 0:
-                    return {
-                        "is_vulnerable": True,
-                        "reason": f"Version {version} below minimum safe version {vuln_info['min_safe']}",
-                        "min_safe_version": vuln_info['min_safe'],
-                        "severity": "medium"
-                    }
-        
-        return {"is_vulnerable": False, "reason": "Version appears safe"}
-    
-    def _compare_versions(self, v1: str, v2: str) -> int:
-        """Compare two version strings. Returns -1 if v1 < v2, 0 if equal, 1 if v1 > v2."""
-        def version_tuple(v):
-            return tuple(map(int, (v.split("."))))
-        
-        try:
-            t1 = version_tuple(v1)
-            t2 = version_tuple(v2)
-            if t1 < t2:
-                return -1
-            elif t1 > t2:
-                return 1
-            else:
-                return 0
-        except ValueError:
-            return 0  # If parsing fails, assume equal
-    
-    def detect_credentials_in_content(self, content: str) -> Dict[str, Any]:
-        """
-        Detect hardcoded credentials and sensitive data in content.
-        
-        Args:
-            content: Content to analyze (HTML, JS, etc.)
-            
-        Returns:
-            Dictionary with credential detection results
-        """
-        found_credentials = []
-        security_issues = []
-        
-        for cred_type, pattern in self.credential_patterns.items():
-            matches = pattern.findall(content)
-            for match in matches:
-                if len(match) == 2:
-                    key, value = match
-                    found_credentials.append({
-                        "type": cred_type,
-                        "key": key.strip(),
-                        "value": value[:20] + "..." if len(value) > 20 else value,
-                        "severity": "high" if cred_type in ['api_key', 'secret_key', 'aws_key'] else "medium"
-                    })
-        
-        # Check for other security issues
-        if self.vulnerable_patterns['eval_usage'].search(content):
-            security_issues.append({
-                "type": "dangerous_eval",
-                "description": "Use of eval() function detected",
-                "severity": "high"
-            })
-        
-        if self.vulnerable_patterns['innerHTML_dangerous'].search(content):
-            security_issues.append({
-                "type": "xss_risk",
-                "description": "Direct innerHTML assignment detected",
-                "severity": "medium"
-            })
-        
-        if self.vulnerable_patterns['document_write'].search(content):
-            security_issues.append({
-                "type": "xss_risk",
-                "description": "document.write() usage detected",
-                "severity": "medium"
-            })
-        
-        return {
-            "credentials_found": found_credentials,
-            "security_issues": security_issues,
-            "total_issues": len(found_credentials) + len(security_issues),
-            "has_credentials": len(found_credentials) > 0,
-            "has_security_issues": len(security_issues) > 0
-        }
-    
-    def analyze_post_data(self, post_data: str) -> Dict[str, Any]:
-        """
-        Analyze POST data for security vulnerabilities.
-        
-        Args:
-            post_data: POST request body data
-            
-        Returns:
-            Dictionary with POST data analysis results
-        """
-        if not post_data or not post_data.strip():
-            return {"analysis": "No POST data", "issues": []}
-        
-        issues = []
-        sensitive_fields = []
-        
-        # Check for sensitive data in POST
-        try:
-            # Try to parse as JSON
-            if post_data.strip().startswith('{'):
-                data = json.loads(post_data)
-                if isinstance(data, dict):
-                    for key, value in data.items():
-                        key_lower = key.lower()
-                        if any(sensitive in key_lower for sensitive in ['password', 'secret', 'token', 'key', 'auth']):
-                            sensitive_fields.append({
-                                "field": key,
-                                "type": "sensitive_field",
-                                "severity": "high"
-                            })
-        except json.JSONDecodeError:
-            # Try to parse as form data
-            if '=' in post_data and '&' in post_data:
-                for pair in post_data.split('&'):
-                    if '=' in pair:
-                        key, value = pair.split('=', 1)
-                        key_lower = key.lower()
-                        if any(sensitive in key_lower for sensitive in ['password', 'secret', 'token', 'key', 'auth']):
-                            sensitive_fields.append({
-                                "field": key,
-                                "type": "sensitive_field",
-                                "severity": "high"
-                            })
-        
-        # Check for SQL injection patterns
-        sql_patterns = [
-            r"union\s+select", r"or\s+1\s*=\s*1", r"drop\s+table", r"delete\s+from",
-            r"insert\s+into", r"update\s+set", r"exec\s*\(", r"xp_cmdshell"
-        ]
-        
-        for pattern in sql_patterns:
-            if re.search(pattern, post_data, re.I):
-                issues.append({
-                    "type": "sql_injection_attempt",
-                    "description": f"Potential SQL injection pattern: {pattern}",
-                    "severity": "high"
-                })
-        
-        # Check for XSS patterns
-        xss_patterns = [
-            r"<script[^>]*>", r"javascript:", r"onerror\s*=", r"onload\s*=",
-            r"onclick\s*=", r"onmouseover\s*="
-        ]
-        
-        for pattern in xss_patterns:
-            if re.search(pattern, post_data, re.I):
-                issues.append({
-                    "type": "xss_attempt",
-                    "description": f"Potential XSS pattern: {pattern}",
-                    "severity": "high"
-                })
-        
-        return {
-            "analysis": "POST data analyzed",
-            "sensitive_fields": sensitive_fields,
-            "issues": issues,
-            "total_issues": len(sensitive_fields) + len(issues),
-            "has_sensitive_data": len(sensitive_fields) > 0,
-            "has_attacks": len(issues) > 0
-        }
-    
     def _empty_result(self) -> Dict[str, Any]:
         """Return empty detection result."""
         return {
@@ -628,20 +403,19 @@ class StackDetector:
 
 def detect_stack_from_traffic(headers_text: str = "", html_content: str = "", 
                             script_srcs: List[str] = None, meta_content: str = "",
-                            post_data: str = "", url: str = "") -> Dict[str, Any]:
+                            url: str = "") -> Dict[str, Any]:
     """
-    Comprehensive stack detection from various traffic components with security analysis.
+    Comprehensive stack detection from various traffic components.
     
     Args:
         headers_text: HTTP headers
         html_content: HTML content
         script_srcs: List of script src URLs
         meta_content: Meta tags content
-        post_data: POST request body data
         url: Base URL for context
         
     Returns:
-        Combined detection results with security analysis
+        Combined detection results
     """
     if script_srcs is None:
         script_srcs = []
@@ -656,19 +430,10 @@ def detect_stack_from_traffic(headers_text: str = "", html_content: str = "",
         "meta": detector.detect_from_meta_tags(meta_content)
     }
     
-    # Analyze POST data for security issues
-    post_analysis = detector.analyze_post_data(post_data) if post_data else {}
-    
-    # Analyze content for credentials
-    credential_analysis = {}
-    if html_content:
-        credential_analysis = detector.detect_credentials_in_content(html_content)
-    
     # Combine results
     all_technologies = {}
     all_standard_libs = []
     all_custom_libs = []
-    all_security_issues = []
     total_confidence = 0.0
     detection_methods = []
     
@@ -678,16 +443,7 @@ def detect_stack_from_traffic(headers_text: str = "", html_content: str = "",
             all_technologies.update(result.get("detected_technologies", {}))
             all_standard_libs.extend(result.get("standard_libraries", []))
             all_custom_libs.extend(result.get("custom_libraries", []))
-            all_security_issues.extend(result.get("security_issues", []))
             total_confidence += result.get("confidence", 0.0)
-    
-    # Add POST data security issues
-    if post_analysis.get("issues"):
-        all_security_issues.extend(post_analysis["issues"])
-    
-    # Add credential analysis issues
-    if credential_analysis.get("security_issues"):
-        all_security_issues.extend(credential_analysis["security_issues"])
     
     # Calculate overall confidence
     avg_confidence = total_confidence / len(detection_methods) if detection_methods else 0.0
@@ -702,8 +458,7 @@ def detect_stack_from_traffic(headers_text: str = "", html_content: str = "",
             "version": top_standard.get("version", ""),
             "category": top_standard.get("category", ""),
             "type": "standard",
-            "confidence": top_standard.get("confidence", 0.0),
-            "vulnerability_check": top_standard.get("vulnerability_check", {})
+            "confidence": top_standard.get("confidence", 0.0)
         }
     elif all_custom_libs:
         top_custom = max(all_custom_libs, key=lambda x: x.get("confidence", 0.0))
@@ -712,14 +467,8 @@ def detect_stack_from_traffic(headers_text: str = "", html_content: str = "",
             "version": top_custom.get("version", ""),
             "category": top_custom.get("category", ""),
             "type": "custom",
-            "confidence": top_custom.get("confidence", 0.0),
-            "vulnerability_check": top_custom.get("vulnerability_check", {})
+            "confidence": top_custom.get("confidence", 0.0)
         }
-    
-    # Calculate security risk score
-    high_severity_issues = len([issue for issue in all_security_issues if issue.get("severity") == "high"])
-    medium_severity_issues = len([issue for issue in all_security_issues if issue.get("severity") == "medium"])
-    security_risk_score = (high_severity_issues * 3) + (medium_severity_issues * 1)
     
     return {
         "detected_technologies": all_technologies,
@@ -729,15 +478,5 @@ def detect_stack_from_traffic(headers_text: str = "", html_content: str = "",
         "detection_methods": detection_methods,
         "confidence": avg_confidence,
         "total_detected": len(all_technologies),
-        "component_candidates": all_standard_libs + all_custom_libs,
-        "security_analysis": {
-            "security_issues": all_security_issues,
-            "total_security_issues": len(all_security_issues),
-            "high_severity_issues": high_severity_issues,
-            "medium_severity_issues": medium_severity_issues,
-            "security_risk_score": security_risk_score,
-            "has_vulnerabilities": len(all_security_issues) > 0,
-            "post_data_analysis": post_analysis,
-            "credential_analysis": credential_analysis
-        }
+        "component_candidates": all_standard_libs + all_custom_libs
     }

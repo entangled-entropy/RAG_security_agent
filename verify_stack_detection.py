@@ -8,8 +8,10 @@ is working correctly with the RAG security agent system.
 
 import asyncio
 import json
-from preprocess import normalize_chunk_text
-from stack_detector import detect_stack_from_traffic, StackDetector
+
+# Import from new modular structure
+from src.zap_rag_security_agent.preprocessing.normalizer import normalize_chunk_text
+from src.zap_rag_security_agent.detectors.stack_detector import detect_stack_from_traffic, StackDetector
 from collector_chunked import chunk_message
 
 

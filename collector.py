@@ -22,7 +22,9 @@ from autogen_ext.memory.chromadb import (
     SentenceTransformerEmbeddingFunctionConfig,
 )
 from autogen_core.memory import MemoryContent, MemoryMimeType
-from baseline_docs import BASELINE_DOCS
+
+# Import from new modular structure
+from src.zap_rag_security_agent.data.baseline_docs import BASELINE_DOCS
 
 # =====================
 # Config Block
