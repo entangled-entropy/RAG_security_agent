@@ -7,8 +7,14 @@ for collecting traffic and performing security analysis.
 """
 
 import asyncio
-from src.zap_rag_security_agent.core.agent import SecurityAnalysisAgent
-from src.zap_rag_security_agent.collectors.zap_collector import ZAPCollector
+import sys
+import os
+
+# Add the src directory to the Python path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+from zap_rag_security_agent.core.agent import SecurityAnalysisAgent
+from zap_rag_security_agent.collectors.zap_collector import ZAPCollector
 
 
 async def basic_collection_example():

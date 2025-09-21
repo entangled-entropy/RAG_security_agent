@@ -104,8 +104,9 @@ def redact_value(value: str) -> str:
     v = value
     # redact long hex-like tokens
     v = re.sub(r"([A-Fa-f0-9]{8,})([A-Fa-f0-9\-_.]{8,})?", "[REDACTED_TOKEN]", v)
-    # redact sequences that look like jwt (header.payload.signature)
-    v = re.sub(r"[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+", "[REDACTED_JWT]", v)
+    # redact sequences that look like jwt (header.payload.signature) - but not simple version numbers
+    # JWT pattern: at least 10 chars per part, not just version numbers like 8.1.2
+    v = re.sub(r"[A-Za-z0-9-_]{10,}\.[A-Za-z0-9-_]{10,}\.[A-Za-z0-9-_]{10,}", "[REDACTED_JWT]", v)
     return v
 
 def redact_sensitive_headers(headers_text: str) -> str:
@@ -329,6 +330,27 @@ def annotate_suspicious_tokens(text: str) -> str:
     return out
 
 
+def clean_attack_markers(text: str) -> str:
+    """
+    Clean ATTACK markers from input text to restore original content.
+    This removes [ATTACK:...] markers that were added during annotation.
+    """
+    if not text:
+        return text
+    
+    # Remove ATTACK markers while preserving the original content
+    # Pattern: [ATTACK:content] -> content
+    cleaned = re.sub(r'\[ATTACK:([^\]]*)\]', r'\1', text)
+    
+    # Handle nested ATTACK markers by applying the pattern multiple times
+    # This handles cases like [ATTACK:[ATTACK:content]] -> content
+    prev_cleaned = ""
+    while cleaned != prev_cleaned:
+        prev_cleaned = cleaned
+        cleaned = re.sub(r'\[ATTACK:([^\]]*)\]', r'\1', cleaned)
+    
+    return cleaned
+
 def normalize_chunk_text(chunk_text: str, chunk_type: str = None) -> Tuple[str, Dict]:
     """
     Higher-level normalizer used by collectors:
@@ -348,8 +370,11 @@ def normalize_chunk_text(chunk_text: str, chunk_type: str = None) -> Tuple[str, 
     if chunk_text is None:
         chunk_text = ""
     
+    # Clean ATTACK markers from input to restore original content
+    cleaned_input = clean_attack_markers(chunk_text)
+    
     # keep the original normalization
-    normalized = preprocess_payload(chunk_text, chunk_type)
+    normalized = preprocess_payload(cleaned_input, chunk_type)
 
     # compute suspicion
     score, tags = compute_suspicion_score(normalized)
@@ -361,22 +386,23 @@ def normalize_chunk_text(chunk_text: str, chunk_type: str = None) -> Tuple[str, 
         "suspicion_score": int(score),
         "suspicious": bool(score > 0),
         "suspicious_tags": tags,
-        "chunk_type": chunk_type or "unknown"
+        "chunk_type": chunk_type or "unknown",
+        "annotated_text": annotated  # Store annotated version in metadata for forensic analysis
     }
 
     # Perform stack detection for headers and HTML content
-    if chunk_type in ["headers", "body"] and chunk_text.strip():
+    if chunk_type in ["headers", "body"] and cleaned_input.strip():
         try:
             if chunk_type == "headers":
-                stack_result = detect_stack_from_traffic(headers_text=chunk_text)
+                stack_result = detect_stack_from_traffic(headers_text=cleaned_input)
             elif chunk_type == "body":
                 # Check if body contains HTML
-                if "<html" in chunk_text.lower() or "<!doctype" in chunk_text.lower():
-                    stack_result = detect_stack_from_traffic(html_content=chunk_text)
+                if "<html" in cleaned_input.lower() or "<!doctype" in cleaned_input.lower():
+                    stack_result = detect_stack_from_traffic(html_content=cleaned_input)
                 else:
                     # Check if it's POST data
-                    if chunk_text.strip().startswith('{') or '=' in chunk_text and '&' in chunk_text:
-                        stack_result = detect_stack_from_traffic(post_data=chunk_text)
+                    if cleaned_input.strip().startswith('{') or '=' in cleaned_input and '&' in cleaned_input:
+                        stack_result = detect_stack_from_traffic(post_data=cleaned_input)
                     else:
                         stack_result = {}
             else:
@@ -416,8 +442,9 @@ def normalize_chunk_text(chunk_text: str, chunk_type: str = None) -> Tuple[str, 
                         }
                         for comp in component_candidates[:10]  # Limit to first 10
                     ])
-                
-                # Add security analysis
+            
+            # Add security analysis (regardless of whether technologies were detected)
+            if stack_result:
                 security_analysis = stack_result.get("security_analysis", {})
                 if security_analysis:
                     meta["security_analysis"] = {
@@ -446,7 +473,7 @@ def normalize_chunk_text(chunk_text: str, chunk_type: str = None) -> Tuple[str, 
             # Don't fail the entire process if stack detection fails
             meta["stack_detection_error"] = str(e)
 
-    return annotated, meta
+    return normalized, meta
 
 
 # v2

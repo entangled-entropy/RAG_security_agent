@@ -15,13 +15,13 @@ import sys
 import os
 from datetime import datetime
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add the src directory to the Python path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from src.zap_rag_security_agent.core.agent import SecurityAnalysisAgent
-from src.zap_rag_security_agent.collectors.zap_collector import ZAPCollector
-from src.zap_rag_security_agent.detectors.stack_detector import StackDetector
-from src.zap_rag_security_agent.preprocessing.normalizer import normalize_chunk_text
+from zap_rag_security_agent.core.agent import SecurityAnalysisAgent
+from zap_rag_security_agent.collectors.zap_collector import ZAPCollector
+from zap_rag_security_agent.detectors.stack_detector import StackDetector
+from zap_rag_security_agent.preprocessing.normalizer import normalize_chunk_text
 
 
 async def advanced_security_analysis():

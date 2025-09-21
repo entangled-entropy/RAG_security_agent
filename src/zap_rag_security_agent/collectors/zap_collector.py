@@ -152,7 +152,7 @@ class ZAPCollector:
             pass
         return ""
     
-    def _chunk_message(self, req_text: str, group_id: str) -> Generator[Dict[str, Any], None, None]:
+    def _chunk_message(self, req_text: str, group_id: str, prefix: str = "") -> Generator[Dict[str, Any], None, None]:
         """
         Break HTTP request into structured chunks with security analysis.
         
@@ -181,8 +181,8 @@ class ZAPCollector:
             norm_path, meta_path = normalize_chunk_text(path_text, chunk_type="path")
             yield {
                 "group_id": group_id,
-                "part": "path",
-                "id": f"{group_id}-path",
+                "part": f"{prefix}path" if prefix else "path",
+                "id": f"{group_id}-{prefix}path" if prefix else f"{group_id}-path",
                 "content": norm_path,
                 "meta": meta_path,
             }
@@ -193,8 +193,8 @@ class ZAPCollector:
                 norm_query, meta_query = normalize_chunk_text(query_text, chunk_type="query")
                 yield {
                     "group_id": group_id,
-                    "part": "query",
-                    "id": f"{group_id}-query",
+                    "part": f"{prefix}query" if prefix else "query",
+                    "id": f"{group_id}-{prefix}query" if prefix else f"{group_id}-query",
                     "content": norm_query,
                     "meta": meta_query,
                 }
@@ -216,8 +216,8 @@ class ZAPCollector:
             norm_headers, meta_headers = normalize_chunk_text(headers_block, chunk_type="headers")
             yield {
                 "group_id": group_id,
-                "part": "headers",
-                "id": f"{group_id}-headers",
+                "part": f"{prefix}headers" if prefix else "headers",
+                "id": f"{group_id}-{prefix}headers" if prefix else f"{group_id}-headers",
                 "content": norm_headers,
                 "meta": meta_headers,
             }
@@ -234,8 +234,8 @@ class ZAPCollector:
             norm_body, meta_body = normalize_chunk_text(body, chunk_type="body")
             yield {
                 "group_id": group_id,
-                "part": "body",
-                "id": f"{group_id}-body",
+                "part": f"{prefix}body" if prefix else "body",
+                "id": f"{group_id}-{prefix}body" if prefix else f"{group_id}-body",
                 "content": norm_body,
                 "meta": meta_body,
             }
@@ -244,32 +244,60 @@ class ZAPCollector:
         """Process a single ZAP message and store in memory."""
         group_id = str(message["id"])
         req_text = (message.get("requestHeader", "") + "\r\n\r\n" + message.get("requestBody", "")).strip()
+        resp_text = (message.get("responseHeader", "") + "\r\n\r\n" + message.get("responseBody", "")).strip()
         
-        if not req_text:
+        if not req_text and not resp_text:
             return
         
         tasks = []
-        for chunk in self._chunk_message(req_text, group_id):
-            # Merge chunk metadata with collector metadata
-            meta = {
-                "type": "traffic",
-                "group_id": chunk["group_id"],
-                "part": chunk["part"],
-                "id": chunk["id"],
-            }
-            
-            # Include security analysis metadata
-            if isinstance(chunk.get("meta"), dict):
-                for k, v in chunk["meta"].items():
-                    # Ensure only primitive types for ChromaDB metadata
-                    meta[k] = v if isinstance(v, (str, int, float, bool)) else str(v)
-            
-            content = MemoryContent(
-                content=chunk["content"],
-                mime_type=MemoryMimeType.TEXT,
-                metadata=meta,
-            )
-            tasks.append(self.memory.add(content))
+        
+        # Process request
+        if req_text:
+            for chunk in self._chunk_message(req_text, group_id, prefix="req_"):
+                # Merge chunk metadata with collector metadata
+                meta = {
+                    "type": "traffic",
+                    "group_id": chunk["group_id"],
+                    "part": chunk["part"],
+                    "id": chunk["id"],
+                }
+                
+                # Include security analysis metadata
+                if isinstance(chunk.get("meta"), dict):
+                    for k, v in chunk["meta"].items():
+                        # Ensure only primitive types for ChromaDB metadata
+                        meta[k] = v if isinstance(v, (str, int, float, bool)) else str(v)
+                
+                content = MemoryContent(
+                    content=chunk["content"],
+                    mime_type=MemoryMimeType.TEXT,
+                    metadata=meta,
+                )
+                tasks.append(self.memory.add(content))
+        
+        # Process response
+        if resp_text:
+            for chunk in self._chunk_message(resp_text, group_id, prefix="resp_"):
+                # Merge chunk metadata with collector metadata
+                meta = {
+                    "type": "traffic",
+                    "group_id": chunk["group_id"],
+                    "part": chunk["part"],
+                    "id": chunk["id"],
+                }
+                
+                # Include security analysis metadata
+                if isinstance(chunk.get("meta"), dict):
+                    for k, v in chunk["meta"].items():
+                        # Ensure only primitive types for ChromaDB metadata
+                        meta[k] = v if isinstance(v, (str, int, float, bool)) else str(v)
+                
+                content = MemoryContent(
+                    content=chunk["content"],
+                    mime_type=MemoryMimeType.TEXT,
+                    metadata=meta,
+                )
+                tasks.append(self.memory.add(content))
         
         if tasks:
             await asyncio.gather(*tasks)

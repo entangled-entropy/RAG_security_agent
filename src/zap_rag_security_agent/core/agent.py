@@ -211,7 +211,176 @@ class SecurityAnalysisAgent:
         
         return "\n".join(out_lines)
     
-    def display_documents(self, documents: List[Dict[str, Any]], limit: int = 5, reconstruct: bool = False) -> None:
+    def reconstruct_http_message_with_analysis(self, group_id: str, db_path: Optional[str] = None) -> str:
+        """
+        Reconstruct a complete HTTP message with analysis metadata for better context.
+        
+        Args:
+            group_id: Group ID to reconstruct
+            db_path: Path to ChromaDB SQLite database
+            
+        Returns:
+            Reconstructed HTTP message with analysis data
+        """
+        if db_path is None:
+            db_path = f"{self.persist_path}/chroma.sqlite3"
+        
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        
+        # First, get the basic HTTP message
+        http_message = self.reconstruct_http_message(group_id, db_path)
+        
+        # Query for analysis metadata
+        analysis_sql = """
+        SELECT 
+            m1.key,
+            m1.string_value,
+            m1.float_value,
+            m1.int_value
+        FROM embedding_metadata m1
+        JOIN embedding_metadata group_meta 
+          ON group_meta.id = m1.id AND group_meta.key = 'group_id'
+        WHERE group_meta.string_value = ?
+          AND m1.key IN (
+              'suspicion_score', 'suspicious', 'suspicious_tags', 'chunk_type',
+              'stack_detection', 'top_component', 'component_candidates',
+              'security_analysis', 'security_issues_summary', 'stack_detection_error'
+          )
+        ORDER BY m1.key;
+        """
+        
+        cur.execute(analysis_sql, (str(group_id),))
+        analysis_rows = cur.fetchall()
+        conn.close()
+        
+        # Build analysis section
+        analysis_lines = []
+        analysis_data = {}
+        
+        # Process analysis metadata
+        for key, string_val, float_val, int_val in analysis_rows:
+            value = string_val if string_val is not None else (float_val if float_val is not None else int_val)
+            if value is not None:
+                analysis_data[key] = value
+        
+        # Add analysis section if we have data
+        if analysis_data:
+            analysis_lines.append("\n[ANALYSIS]")
+            
+            # Suspicion analysis
+            if 'suspicion_score' in analysis_data:
+                score = analysis_data['suspicion_score']
+                suspicious = analysis_data.get('suspicious', False)
+                tags = analysis_data.get('suspicious_tags', '[]')
+                analysis_lines.append(f"Suspicion Score: {score} ({'SUSPICIOUS' if suspicious else 'CLEAN'})")
+                if tags and tags != '[]':
+                    analysis_lines.append(f"Suspicious Tags: {tags}")
+            
+            # Stack detection
+            if 'stack_detection' in analysis_data:
+                stack_info = analysis_data['stack_detection']
+                if stack_info:
+                    try:
+                        import json
+                        stack_data = json.loads(stack_info) if isinstance(stack_info, str) else stack_info
+                        total_detected = stack_data.get('total_detected', 0)
+                        confidence = stack_data.get('confidence', 0.0)
+                        analysis_lines.append(f"Technologies Detected: {total_detected} (confidence: {confidence:.2f})")
+                        
+                        # Add detection methods
+                        methods = stack_data.get('detection_methods', [])
+                        if methods:
+                            analysis_lines.append(f"Detection Methods: {', '.join(methods)}")
+                    except (json.JSONDecodeError, AttributeError):
+                        analysis_lines.append(f"Stack Detection: {stack_info}")
+            
+            # Top component
+            if 'top_component' in analysis_data:
+                top_comp = analysis_data['top_component']
+                if top_comp:
+                    try:
+                        import json
+                        comp_data = json.loads(top_comp) if isinstance(top_comp, str) else top_comp
+                        name = comp_data.get('name', 'Unknown')
+                        version = comp_data.get('version', 'N/A')
+                        comp_type = comp_data.get('type', 'Unknown')
+                        confidence = comp_data.get('confidence', 0.0)
+                        is_vulnerable = comp_data.get('is_vulnerable', False)
+                        
+                        vuln_status = " ⚠️ VULNERABLE" if is_vulnerable else ""
+                        analysis_lines.append(f"Top Component: {name} v{version} ({comp_type}, confidence: {confidence:.2f}){vuln_status}")
+                    except (json.JSONDecodeError, AttributeError):
+                        analysis_lines.append(f"Top Component: {top_comp}")
+            
+            # Component candidates
+            if 'component_candidates' in analysis_data:
+                candidates = analysis_data['component_candidates']
+                if candidates:
+                    try:
+                        import json
+                        candidates_data = json.loads(candidates) if isinstance(candidates, str) else candidates
+                        if candidates_data:
+                            analysis_lines.append("Component Candidates:")
+                            for comp in candidates_data[:5]:  # Show top 5
+                                name = comp.get('name', 'Unknown')
+                                version = comp.get('version', 'N/A')
+                                confidence = comp.get('confidence', 0.0)
+                                is_vulnerable = comp.get('is_vulnerable', False)
+                                vuln_status = " ⚠️ VULNERABLE" if is_vulnerable else ""
+                                analysis_lines.append(f"  - {name} v{version} (confidence: {confidence:.2f}){vuln_status}")
+                    except (json.JSONDecodeError, AttributeError):
+                        analysis_lines.append(f"Component Candidates: {candidates}")
+            
+            # Security analysis
+            if 'security_analysis' in analysis_data:
+                sec_analysis = analysis_data['security_analysis']
+                if sec_analysis:
+                    try:
+                        import json
+                        sec_data = json.loads(sec_analysis) if isinstance(sec_analysis, str) else sec_analysis
+                        total_issues = sec_data.get('total_security_issues', 0)
+                        high_severity = sec_data.get('high_severity_issues', 0)
+                        medium_severity = sec_data.get('medium_severity_issues', 0)
+                        risk_score = sec_data.get('security_risk_score', 0)
+                        has_vulnerabilities = sec_data.get('has_vulnerabilities', False)
+                        
+                        analysis_lines.append(f"Security Issues: {total_issues} total ({high_severity} high, {medium_severity} medium)")
+                        analysis_lines.append(f"Security Risk Score: {risk_score}")
+                        if has_vulnerabilities:
+                            analysis_lines.append("⚠️ VULNERABILITIES DETECTED")
+                    except (json.JSONDecodeError, AttributeError):
+                        analysis_lines.append(f"Security Analysis: {sec_analysis}")
+            
+            # Security issues summary
+            if 'security_issues_summary' in analysis_data:
+                issues_summary = analysis_data['security_issues_summary']
+                if issues_summary:
+                    try:
+                        import json
+                        issues_data = json.loads(issues_summary) if isinstance(issues_summary, str) else issues_summary
+                        if issues_data:
+                            analysis_lines.append("Security Issues Summary:")
+                            for issue in issues_data[:3]:  # Show top 3
+                                issue_type = issue.get('type', 'Unknown')
+                                severity = issue.get('severity', 'Unknown')
+                                description = issue.get('description', 'No description')
+                                analysis_lines.append(f"  - {issue_type} ({severity}): {description}")
+                    except (json.JSONDecodeError, AttributeError):
+                        analysis_lines.append(f"Security Issues: {issues_summary}")
+            
+            # Stack detection errors
+            if 'stack_detection_error' in analysis_data:
+                error = analysis_data['stack_detection_error']
+                analysis_lines.append(f"Stack Detection Error: {error}")
+        
+        # Combine HTTP message and analysis
+        if analysis_lines:
+            return http_message + "\n".join(analysis_lines)
+        else:
+            return http_message
+    
+    def display_documents(self, documents: List[Dict[str, Any]], limit: int = 5, reconstruct: bool = False, with_analysis: bool = True) -> None:
         """
         Display retrieved documents with optional reconstruction.
         
@@ -219,6 +388,7 @@ class SecurityAnalysisAgent:
             documents: List of documents to display
             limit: Maximum number of documents to show
             reconstruct: Whether to reconstruct full HTTP messages
+            with_analysis: Whether to include analysis metadata (only when reconstruct=True)
         """
         if not documents:
             print("[INFO] No documents found.")
@@ -231,8 +401,11 @@ class SecurityAnalysisAgent:
                 meta = getattr(doc, "metadata", None) or (doc.get("metadata") if isinstance(doc, dict) else None) or {}
                 group_id = meta.get("group_id")
                 if group_id:
-                    full_msg = self.reconstruct_http_message(group_id)
-                    print(full_msg[:500])
+                    if with_analysis:
+                        full_msg = self.reconstruct_http_message_with_analysis(group_id)
+                    else:
+                        full_msg = self.reconstruct_http_message(group_id)
+                    print(full_msg[:1000])  # Increased limit to show analysis data
                 else:
                     content = getattr(doc, "content", None) or (doc.get("content") if isinstance(doc, dict) else "")
                     print((content or "")[:500])
@@ -240,13 +413,14 @@ class SecurityAnalysisAgent:
                 content = getattr(doc, "content", None) or (doc.get("content") if isinstance(doc, dict) else "")
                 print((content or "")[:500])
     
-    async def analyze_traffic(self, query: str, reconstruct: bool = True) -> None:
+    async def analyze_traffic(self, query: str, reconstruct: bool = True, with_analysis: bool = True) -> None:
         """
         Analyze HTTP traffic for security vulnerabilities.
         
         Args:
             query: Security analysis query
             reconstruct: Whether to reconstruct full HTTP messages
+            with_analysis: Whether to include analysis metadata in reconstruction
         """
         if not self.assistant_agent:
             raise RuntimeError("Agent not initialized. Call initialize() first.")
@@ -267,12 +441,12 @@ class SecurityAnalysisAgent:
         
         print(f"[INFO] Found {len(group_ids)} unique group_ids from results")
         
-        # Reconstruct each group
-        reconstructed = [self.reconstruct_http_message(gid) for gid in group_ids]
+        # Reconstruct each group with analysis data
+        reconstructed = [self.reconstruct_http_message_with_analysis(gid) for gid in group_ids]
         
         # Show samples
         for i, msg in enumerate(reconstructed[:2], 1):
-            print(f"\n[DEBUG] Reconstructed sample {i}:\n{msg[:400]}...\n")
+            print(f"\n[DEBUG] Reconstructed sample {i}:\n{msg[:600]}...\n")
         
         if not reconstructed:
             print("[!] Nothing to send to OpenAI.")
@@ -280,10 +454,12 @@ class SecurityAnalysisAgent:
         
         print(f"[INFO] Sending {len(reconstructed)} reconstructed docs to OpenAI")
         
-        # Build task for OpenAI
+        # Build task for OpenAI with enhanced context
         task = (
-            "Analyze the following HTTP traffic for vulnerabilities:\n\n" +
-            "\n\n---\n\n".join(reconstructed[:5])  # limit to avoid token explosion
+            "Analyze the following HTTP traffic for vulnerabilities. "
+            "The traffic includes analysis metadata showing detected technologies, "
+            "version information, and security assessments:\n\n" +
+            "\n\n---\n\n".join(reconstructed[:3])  # limit to avoid token explosion
         )
         
         # Run assistant

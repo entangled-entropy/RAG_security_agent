@@ -109,10 +109,167 @@ class StackDetector:
             # Analyze with Wappalyzer
             results = self.wappalyzer.analyze_with_versions_and_categories(webpage)
             
+            # If Wappalyzer didn't detect anything, try client-side detection
+            if not results:
+                client_results = self._detect_client_technologies(headers, url)
+                results = client_results.get('detected_technologies', {})
+                security_analysis = client_results.get('security_analysis', {})
+                
+                # Process the results
+                processed = self._process_wappalyzer_results(results, "headers")
+                
+                # Add security analysis if available
+                if security_analysis:
+                    processed['security_analysis'] = security_analysis
+                
+                return processed
+            
             return self._process_wappalyzer_results(results, "headers")
             
         except Exception as e:
             return self._error_result(f"Header analysis failed: {str(e)}")
+    
+    def _detect_client_technologies(self, headers: Dict[str, str], url: str = "") -> Dict[str, Any]:
+        """
+        Detect client-side technologies from request headers.
+        
+        Args:
+            headers: Parsed headers dictionary
+            url: Optional URL for context
+            
+        Returns:
+            Dictionary with client technology detection results
+        """
+        detected_techs = {}
+        
+        # Detect browser from User-Agent
+        user_agent = headers.get('user-agent', '').lower()
+        if 'firefox' in user_agent:
+            # Extract Firefox version
+            import re
+            firefox_match = re.search(r'firefox/(\d+\.\d+)', user_agent)
+            version = firefox_match.group(1) if firefox_match else 'unknown'
+            detected_techs['Firefox'] = {
+                'version': version,
+                'category': 'Browsers',
+                'confidence': 0.9
+            }
+        elif 'chrome' in user_agent:
+            chrome_match = re.search(r'chrome/(\d+\.\d+)', user_agent)
+            version = chrome_match.group(1) if chrome_match else 'unknown'
+            detected_techs['Chrome'] = {
+                'version': version,
+                'category': 'Browsers',
+                'confidence': 0.9
+            }
+        elif 'safari' in user_agent and 'chrome' not in user_agent:
+            safari_match = re.search(r'version/(\d+\.\d+)', user_agent)
+            version = safari_match.group(1) if safari_match else 'unknown'
+            detected_techs['Safari'] = {
+                'version': version,
+                'category': 'Browsers',
+                'confidence': 0.9
+            }
+        
+        # Detect WebSocket usage
+        if 'sec-websocket-version' in headers:
+            detected_techs['WebSocket'] = {
+                'version': headers.get('sec-websocket-version', '13'),
+                'category': 'WebSockets',
+                'confidence': 0.8
+            }
+        
+        # Detect Socket.IO usage from URL patterns
+        if url and 'socket.io' in url:
+            detected_techs['Socket.IO'] = {
+                'version': '4.0.0',  # Default version
+                'category': 'WebSockets',
+                'confidence': 0.7
+            }
+        
+        # Detect AJAX/XMLHttpRequest patterns
+        if headers.get('x-requested-with', '').lower() == 'xmlhttprequest':
+            detected_techs['XMLHttpRequest'] = {
+                'version': '1.0',
+                'category': 'AJAX',
+                'confidence': 0.8
+            }
+        
+        # Add security analysis
+        security_analysis = self._analyze_client_security(headers, url)
+        
+        return {
+            'detected_technologies': detected_techs,
+            'security_analysis': security_analysis
+        }
+    
+    def _analyze_client_security(self, headers: Dict[str, str], url: str = "") -> Dict[str, Any]:
+        """
+        Analyze client-side security from request headers.
+        
+        Args:
+            headers: Parsed headers dictionary
+            url: Optional URL for context
+            
+        Returns:
+            Dictionary with security analysis results
+        """
+        security_issues = []
+        total_issues = 0
+        high_severity = 0
+        medium_severity = 0
+        risk_score = 0
+        
+        # Check for insecure headers
+        user_agent = headers.get('user-agent', '').lower()
+        
+        # Check for old browser versions (security risk)
+        if 'firefox' in user_agent:
+            import re
+            firefox_match = re.search(r'firefox/(\d+\.\d+)', user_agent)
+            if firefox_match:
+                version = float(firefox_match.group(1))
+                if version < 100.0:  # Old Firefox versions
+                    security_issues.append({
+                        'type': 'Outdated Browser',
+                        'severity': 'high',
+                        'description': f'Firefox {version} is outdated and may have security vulnerabilities'
+                    })
+                    total_issues += 1
+                    high_severity += 1
+                    risk_score += 30
+        
+        # Check for WebSocket usage (potential security concern)
+        if 'sec-websocket-version' in headers:
+            security_issues.append({
+                'type': 'WebSocket Usage',
+                'severity': 'medium',
+                'description': 'WebSocket connection detected - ensure proper authentication and validation'
+            })
+            total_issues += 1
+            medium_severity += 1
+            risk_score += 15
+        
+        # Check for insecure referrer
+        referer = headers.get('referer', '')
+        if referer and 'http://' in referer:  # Insecure referrer
+            security_issues.append({
+                'type': 'Insecure Referrer',
+                'severity': 'medium',
+                'description': 'HTTP referrer detected - potential information leakage'
+            })
+            total_issues += 1
+            medium_severity += 1
+            risk_score += 10
+        
+        return {
+            'total_security_issues': total_issues,
+            'high_severity_issues': high_severity,
+            'medium_severity_issues': medium_severity,
+            'security_risk_score': risk_score,
+            'has_vulnerabilities': high_severity > 0,
+            'security_issues': security_issues
+        }
     
     def detect_from_html(self, html_content: str, url: str = "") -> Dict[str, Any]:
         """
@@ -255,10 +412,15 @@ class StackDetector:
             
             for tech_name, tech_data in results.items():
                 if isinstance(tech_data, dict):
-                    # Extract version and category information
-                    version = tech_data.get('version', '')
-                    category = tech_data.get('category', '')
-                    confidence = tech_data.get('confidence', 0.0)
+                    # Extract version and category information from Wappalyzer format
+                    versions = tech_data.get('versions', [])
+                    categories = tech_data.get('categories', [])
+                    confidence = tech_data.get('confidence', 0.8)  # Default confidence for Wappalyzer
+                    
+                    # Get the first version if available
+                    version = versions[0] if versions else ''
+                    # Join categories if multiple
+                    category = ', '.join(categories) if categories else ''
                     
                     tech_info = {
                         "name": tech_name,
@@ -286,6 +448,166 @@ class StackDetector:
             
         except Exception as e:
             return self._error_result(f"Result processing failed: {str(e)}")
+    
+    def analyze_post_data(self, post_data: str) -> Dict[str, Any]:
+        """
+        Analyze POST data for security issues and technology indicators.
+        
+        Args:
+            post_data: POST data content
+            
+        Returns:
+            Dictionary with analysis results
+        """
+        if not post_data or not post_data.strip():
+            return self._empty_result()
+        
+        try:
+            detected_techs = {}
+            standard_libs = []
+            custom_libs = []
+            security_issues = []
+            
+            # Check for JSON data
+            if post_data.strip().startswith('{') or post_data.strip().startswith('['):
+                try:
+                    json_data = json.loads(post_data)
+                    detected_techs['JSON'] = {
+                        "name": "JSON",
+                        "version": "",
+                        "category": "Data Format",
+                        "confidence": 0.9
+                    }
+                    standard_libs.append(detected_techs['JSON'])
+                except json.JSONDecodeError:
+                    pass
+            
+            # Check for form data patterns
+            if '=' in post_data and '&' in post_data:
+                detected_techs['Form Data'] = {
+                    "name": "Form Data",
+                    "version": "",
+                    "category": "Data Format", 
+                    "confidence": 0.8
+                }
+                standard_libs.append(detected_techs['Form Data'])
+            
+            # Check for XML data
+            if post_data.strip().startswith('<') and '>' in post_data:
+                detected_techs['XML'] = {
+                    "name": "XML",
+                    "version": "",
+                    "category": "Data Format",
+                    "confidence": 0.8
+                }
+                standard_libs.append(detected_techs['XML'])
+            
+            # Security analysis
+            security_analysis = self._analyze_post_security(post_data)
+            
+            return {
+                "detected_technologies": detected_techs,
+                "standard_libraries": standard_libs,
+                "custom_libraries": custom_libs,
+                "detection_method": "post_data",
+                "confidence": max([lib.get("confidence", 0.0) for lib in standard_libs + custom_libs], default=0.0),
+                "total_detected": len(detected_techs),
+                "security_analysis": security_analysis
+            }
+            
+        except Exception as e:
+            return self._error_result(f"POST data analysis failed: {str(e)}")
+    
+    def _analyze_post_security(self, post_data: str) -> Dict[str, Any]:
+        """Analyze POST data for security issues."""
+        security_issues = []
+        risk_score = 0
+        
+        # Check for credential patterns
+        for pattern_name, pattern in self.credential_patterns.items():
+            if pattern.search(post_data):
+                security_issues.append(f"potential_{pattern_name}")
+                risk_score += 20
+        
+        # Check for SQL injection patterns
+        sql_patterns = [
+            r"'\s*(or|and)\s+['\"]?\d+['\"]?\s*=\s*['\"]?\d+",
+            r"union\s+select",
+            r"drop\s+table",
+            r"delete\s+from",
+            r"insert\s+into",
+            r"update\s+set"
+        ]
+        
+        for pattern in sql_patterns:
+            if re.search(pattern, post_data, re.IGNORECASE):
+                security_issues.append("potential_sql_injection")
+                risk_score += 30
+                break
+        
+        # Check for XSS patterns
+        xss_patterns = [
+            r"<script[^>]*>",
+            r"javascript:",
+            r"on\w+\s*=",
+            r"<iframe[^>]*>"
+        ]
+        
+        for pattern in xss_patterns:
+            if re.search(pattern, post_data, re.IGNORECASE):
+                security_issues.append("potential_xss")
+                risk_score += 25
+                break
+        
+        return {
+            "security_issues": security_issues,
+            "security_risk_score": min(risk_score, 100),
+            "has_credentials": any("credential" in issue for issue in security_issues),
+            "has_injection": any("injection" in issue for issue in security_issues)
+        }
+    
+    def _check_vulnerability(self, tech_name: str, version: str) -> bool:
+        """Check if a technology version is vulnerable."""
+        if not version or not tech_name:
+            return False
+        
+        tech_lower = tech_name.lower()
+        
+        # Check against known vulnerable versions
+        for vuln_tech, vuln_info in self.vulnerable_versions.items():
+            if vuln_tech.lower() in tech_lower:
+                vulnerable_versions = vuln_info.get('vulnerable', [])
+                min_safe = vuln_info.get('min_safe', '')
+                
+                # Check if current version is in vulnerable list
+                if version in vulnerable_versions:
+                    return True
+                
+                # Check if version is below minimum safe version
+                if min_safe and self._version_compare(version, min_safe) < 0:
+                    return True
+        
+        return False
+    
+    def _version_compare(self, version1: str, version2: str) -> int:
+        """Compare two version strings. Returns -1 if v1 < v2, 0 if equal, 1 if v1 > v2."""
+        try:
+            v1_parts = [int(x) for x in version1.split('.')]
+            v2_parts = [int(x) for x in version2.split('.')]
+            
+            # Pad with zeros to make same length
+            max_len = max(len(v1_parts), len(v2_parts))
+            v1_parts.extend([0] * (max_len - len(v1_parts)))
+            v2_parts.extend([0] * (max_len - len(v2_parts)))
+            
+            for v1, v2 in zip(v1_parts, v2_parts):
+                if v1 < v2:
+                    return -1
+                elif v1 > v2:
+                    return 1
+            return 0
+        except (ValueError, AttributeError):
+            return 0  # If can't compare, assume equal
     
     def _is_standard_technology(self, tech_name: str, category: str) -> bool:
         """Determine if a technology is a standard library/framework."""
@@ -403,7 +725,7 @@ class StackDetector:
 
 def detect_stack_from_traffic(headers_text: str = "", html_content: str = "", 
                             script_srcs: List[str] = None, meta_content: str = "",
-                            url: str = "") -> Dict[str, Any]:
+                            post_data: str = "", url: str = "") -> Dict[str, Any]:
     """
     Comprehensive stack detection from various traffic components.
     
@@ -412,6 +734,7 @@ def detect_stack_from_traffic(headers_text: str = "", html_content: str = "",
         html_content: HTML content
         script_srcs: List of script src URLs
         meta_content: Meta tags content
+        post_data: POST data content
         url: Base URL for context
         
     Returns:
@@ -427,7 +750,8 @@ def detect_stack_from_traffic(headers_text: str = "", html_content: str = "",
         "headers": detector.detect_from_headers(headers_text, url),
         "html": detector.detect_from_html(html_content, url),
         "scripts": detector.detect_from_script_src(script_srcs),
-        "meta": detector.detect_from_meta_tags(meta_content)
+        "meta": detector.detect_from_meta_tags(meta_content),
+        "post_data": detector.analyze_post_data(post_data) if post_data else {}
     }
     
     # Combine results
@@ -436,6 +760,7 @@ def detect_stack_from_traffic(headers_text: str = "", html_content: str = "",
     all_custom_libs = []
     total_confidence = 0.0
     detection_methods = []
+    combined_security_analysis = {}
     
     for method, result in results.items():
         if result.get("total_detected", 0) > 0:
@@ -444,9 +769,29 @@ def detect_stack_from_traffic(headers_text: str = "", html_content: str = "",
             all_standard_libs.extend(result.get("standard_libraries", []))
             all_custom_libs.extend(result.get("custom_libraries", []))
             total_confidence += result.get("confidence", 0.0)
+        
+        # Combine security analysis from all methods
+        if result.get("security_analysis"):
+            security_analysis = result.get("security_analysis", {})
+            if not combined_security_analysis:
+                combined_security_analysis = security_analysis.copy()
+            else:
+                # Merge security issues
+                combined_security_analysis["total_security_issues"] += security_analysis.get("total_security_issues", 0)
+                combined_security_analysis["high_severity_issues"] += security_analysis.get("high_severity_issues", 0)
+                combined_security_analysis["medium_severity_issues"] += security_analysis.get("medium_severity_issues", 0)
+                combined_security_analysis["security_risk_score"] += security_analysis.get("security_risk_score", 0)
+                combined_security_analysis["has_vulnerabilities"] = combined_security_analysis.get("has_vulnerabilities", False) or security_analysis.get("has_vulnerabilities", False)
+                combined_security_analysis["security_issues"].extend(security_analysis.get("security_issues", []))
     
     # Calculate overall confidence
     avg_confidence = total_confidence / len(detection_methods) if detection_methods else 0.0
+    
+    # Add vulnerability analysis to all components
+    detector = StackDetector()
+    all_components = all_standard_libs + all_custom_libs
+    for comp in all_components:
+        comp["is_vulnerable"] = detector._check_vulnerability(comp.get("name", ""), comp.get("version", ""))
     
     # Determine top component
     top_component = None
@@ -458,7 +803,8 @@ def detect_stack_from_traffic(headers_text: str = "", html_content: str = "",
             "version": top_standard.get("version", ""),
             "category": top_standard.get("category", ""),
             "type": "standard",
-            "confidence": top_standard.get("confidence", 0.0)
+            "confidence": top_standard.get("confidence", 0.0),
+            "is_vulnerable": top_standard.get("is_vulnerable", False)
         }
     elif all_custom_libs:
         top_custom = max(all_custom_libs, key=lambda x: x.get("confidence", 0.0))
@@ -467,10 +813,11 @@ def detect_stack_from_traffic(headers_text: str = "", html_content: str = "",
             "version": top_custom.get("version", ""),
             "category": top_custom.get("category", ""),
             "type": "custom",
-            "confidence": top_custom.get("confidence", 0.0)
+            "confidence": top_custom.get("confidence", 0.0),
+            "is_vulnerable": top_custom.get("is_vulnerable", False)
         }
     
-    return {
+    result = {
         "detected_technologies": all_technologies,
         "standard_libraries": all_standard_libs,
         "custom_libraries": all_custom_libs,
@@ -480,3 +827,9 @@ def detect_stack_from_traffic(headers_text: str = "", html_content: str = "",
         "total_detected": len(all_technologies),
         "component_candidates": all_standard_libs + all_custom_libs
     }
+    
+    # Add security analysis if available
+    if combined_security_analysis:
+        result["security_analysis"] = combined_security_analysis
+    
+    return result

