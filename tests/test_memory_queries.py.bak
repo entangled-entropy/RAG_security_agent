@@ -1,0 +1,100 @@
+"""
+Runs a semantic query like "API keys or secrets in traffic".
+Prints top-matching docs with similarity ranking.
+"""
+
+"""
+tests/test_memory_queries.py
+-----------------------------
+Query ChromaDB vector memory for suspicious traffic patterns.
+
+Run:
+    python tests/test_memory_queries.py
+"""
+
+# # v1 working
+import asyncio
+from autogen_ext.memory.chromadb import (
+    ChromaDBVectorMemory,
+    PersistentChromaDBVectorMemoryConfig,
+    SentenceTransformerEmbeddingFunctionConfig,
+)
+from autogen_core.memory import MemoryContent
+
+
+async def main():
+    # Reopen the persisted ChromaDB memory store
+    config = PersistentChromaDBVectorMemoryConfig(
+        collection_name="security_memory",  # Collection name for ChromaDB
+        persistence_path="./chroma_data",   # Path where the ChromaDB data is stored
+        embedding_function_config=SentenceTransformerEmbeddingFunctionConfig(
+            model_name="all-MiniLM-L6-v2"   # Embedding model to convert queries and docs into vectors
+        ),
+        k=3,                               # Number of top documents to return based on similarity
+        score_threshold=0.3,               # Only consider documents with similarity above this threshold
+    )
+    
+    # Initialize the ChromaDB memory object
+    memory = ChromaDBVectorMemory(config=config)
+
+    query = "user API in traffic or url"  # Example semantic query
+    print(f"\n[?] Running semantic query: '{query}'")
+
+    # Perform the query and retrieve matching documents
+    results = await memory.query(query)
+
+    # Check if results are returned and print them
+    if hasattr(results, 'documents'):
+        documents = results.documents  # Access the 'documents' attribute (check based on actual API)
+        print(f"\n[+] Found {len(documents)} results matching the query.")
+
+        for i, item in enumerate(documents, 1):
+            # Print the result index, similarity score, and a snippet of the document content
+            print(f"\nResult {i}:")
+            print(f"Similarity Score: {item.score:.4f}")  # Display similarity score
+            print(f"Document content (snippet): {item.content[:500]}")  # Display a snippet of the document content
+    else:
+        print("\n[-] No results found for the query.")
+
+    # Close the ChromaDB memory object to release resources
+    await memory.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+# import asyncio
+# from autogen_ext.memory.chromadb import (
+#     ChromaDBVectorMemory,
+#     PersistentChromaDBVectorMemoryConfig,
+#     SentenceTransformerEmbeddingFunctionConfig,
+# )
+
+# async def list_documents():
+#     # Reload the persisted ChromaDB store
+#     config = PersistentChromaDBVectorMemoryConfig(
+#         collection_name="security_memory", 
+#         persistence_path="./chroma_data",
+#         embedding_function_config=SentenceTransformerEmbeddingFunctionConfig(
+#             model_name="all-MiniLM-L6-v2"
+#         ),
+#         k=3,
+#         score_threshold=0.3,
+#     )
+#     memory = ChromaDBVectorMemory(config=config)
+
+#     # Fetch documents using wildcard query '*'
+#     docs = await memory.query('*')  # '*' should get everything
+
+#     if docs:
+#         print(f"Found {len(docs)} documents in memory.")
+#         for i, doc in enumerate(docs[:5], 1):  # Display only first 5 docs
+#             print(f"\nDoc {i}:")
+#             print(doc.content[:500])  # Show first 500 characters of each doc
+#     else:
+#         print("No documents found.")
+
+#     await memory.close()
+
+# if __name__ == "__main__":
+#     asyncio.run(list_documents())

@@ -1,0 +1,359 @@
+-- database: ../chroma_data/chroma.sqlite3
+
+-------------------------
+-- Collections & Counts:
+-------------------------
+-- List all collections
+SELECT id, name FROM collections;
+
+-- Count how many embeddings total
+SELECT COUNT(*) AS total_embeddings FROM embeddings;
+
+-------------------
+-- Metadata Checks
+-------------------
+-- Peek at metadata keys (what fields exist)
+SELECT DISTINCT key FROM embedding_metadata;
+
+-- Check all docs tagged as 'baseline'
+SELECT COUNT(*) 
+FROM embedding_metadata 
+WHERE key = 'type' AND string_value = 'baseline';
+
+-- Check all traffic docs (non-baseline)
+SELECT COUNT(*) 
+FROM embedding_metadata 
+WHERE key = 'type' AND string_value = 'traffic';
+
+-----------------------------
+-- Inspect Requests / Chunks
+-----------------------------
+-- Pick one embedding and inspect its metadata
+SELECT * FROM embedding_metadata WHERE id = 309;
+
+-- Peek at the latest inserted chunks
+SELECT id, key, string_value
+FROM embedding_metadata
+WHERE id IN (SELECT MAX(id) FROM embedding_metadata);
+
+-- Look up all chunks for a specific request
+SELECT e.id, m.key, m.string_value
+FROM embedding_metadata m
+JOIN embeddings e ON m.id = e.id
+WHERE m.key = 'group_id' AND m.string_value = '309';
+
+-- Find the newest N requests
+SELECT DISTINCT string_value AS group_id
+FROM embedding_metadata
+WHERE key = 'group_id'
+ORDER BY CAST(string_value AS INTEGER) DESC
+LIMIT 10;
+
+-- Show all headers captured for request groupid
+SELECT m2.string_value
+FROM embedding_metadata m1
+JOIN embedding_metadata m2 ON m1.id = m2.id
+WHERE m1.key = 'part' AND m1.string_value = 'header'
+  AND m2.key = 'chroma:document'
+  AND m1.id IN (
+      SELECT id FROM embedding_metadata
+      WHERE key = 'group_id' AND string_value = '134'
+  );
+
+
+-- Check group_id distribution (one per original request)
+SELECT string_value AS group_id, COUNT(*) AS chunks
+FROM embedding_metadata
+WHERE key = 'group_id'
+GROUP BY string_value
+LIMIT 40;
+
+
+SELECT em.string_value AS group_id, COUNT(DISTINCT em.id) AS chunk_count
+FROM embedding_metadata em
+WHERE em.key = 'group_id'
+GROUP BY em.string_value
+ORDER BY chunk_count DESC
+LIMIT 50;
+
+
+SELECT DISTINCT em.id
+FROM embedding_metadata em
+WHERE em.key = 'group_id' AND em.string_value = '134';
+
+SELECT group_meta.string_value AS group_id, COUNT(*) AS parts
+FROM embedding_metadata part_meta
+JOIN embedding_metadata group_meta ON group_meta.id = part_meta.id AND group_meta.key = 'group_id'
+WHERE part_meta.key = 'part'
+GROUP BY group_meta.string_value
+HAVING SUM(CASE WHEN part_meta.string_value = 'full' THEN 1 ELSE 0 END) = 0
+LIMIT 50;
+
+SELECT em.string_value AS group_id, COUNT(DISTINCT em.id) AS chunk_count
+FROM embedding_metadata em
+WHERE em.key = 'group_id'
+GROUP BY em.string_value
+ORDER BY chunk_count DESC
+LIMIT 10;
+
+SELECT DISTINCT em.id
+FROM embedding_metadata em
+WHERE em.key = 'group_id' AND em.string_value = '135';
+
+-- reconstruct data from id
+SELECT part_meta.string_value AS part,
+       efs.string_value AS text,
+       id_meta.string_value AS stored_id
+FROM embedding_metadata part_meta
+JOIN embedding_fulltext_search efs ON part_meta.id = efs.rowid
+JOIN embedding_metadata id_meta ON id_meta.id = part_meta.id AND id_meta.key = 'id'
+JOIN embedding_metadata group_meta ON group_meta.id = part_meta.id AND group_meta.key = 'group_id'
+WHERE part_meta.key = 'part' AND group_meta.string_value = '52'
+ORDER BY CASE LOWER(part_meta.string_value)
+    WHEN 'full' THEN 0
+    WHEN 'path' THEN 1
+    WHEN 'query' THEN 2
+    WHEN 'headers' THEN 3
+    WHEN 'body' THEN 4
+    ELSE 5 END, part_meta.string_value;
+
+
+-------------------
+-- Strucutre of db
+-------------------
+-- Inspect schema (the structure)
+SELECT name, type, sql
+FROM sqlite_master
+WHERE type IN ('table', 'index', 'view')
+ORDER BY name;
+-- output:
+-- name, type, sql
+-- acquire_write,table,"CREATE TABLE acquire_write (
+--                 id INTEGER PRIMARY KEY,
+--                 lock_status INTEGER NOT NULL
+--             )"
+-- collection_metadata,table,"CREATE TABLE collection_metadata (
+--     collection_id TEXT REFERENCES collections(id) ON DELETE CASCADE,
+--     key TEXT NOT NULL,
+--     str_value TEXT,
+--     int_value INTEGER,
+--     float_value REAL, bool_value INTEGER,
+--     PRIMARY KEY (collection_id, key)
+-- )"
+-- collections,table,"CREATE TABLE ""collections"" (
+--     id TEXT PRIMARY KEY, -- unique globally
+--     name TEXT NOT NULL, -- unique per database
+--     dimension INTEGER,
+--     database_id TEXT NOT NULL REFERENCES databases(id) ON DELETE CASCADE, config_json_str TEXT,
+--     UNIQUE (name, database_id)
+-- )"
+-- databases,table,"CREATE TABLE databases (
+--     id TEXT PRIMARY KEY, -- unique globally
+--     name TEXT NOT NULL, -- unique per tenant
+--     tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+--     UNIQUE (tenant_id, name) -- Ensure that a tenant has only one database with a given name
+-- )"
+-- embedding_fulltext_search,table,"CREATE VIRTUAL TABLE embedding_fulltext_search USING fts5(string_value, tokenize='trigram')"
+-- embedding_fulltext_search_config,table,"CREATE TABLE 'embedding_fulltext_search_config'(k PRIMARY KEY, v) WITHOUT ROWID"
+-- embedding_fulltext_search_content,table,"CREATE TABLE 'embedding_fulltext_search_content'(id INTEGER PRIMARY KEY, c0)"
+-- embedding_fulltext_search_data,table,"CREATE TABLE 'embedding_fulltext_search_data'(id INTEGER PRIMARY KEY, block BLOB)"
+-- embedding_fulltext_search_docsize,table,"CREATE TABLE 'embedding_fulltext_search_docsize'(id INTEGER PRIMARY KEY, sz BLOB)"
+-- embedding_fulltext_search_idx,table,"CREATE TABLE 'embedding_fulltext_search_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID"
+-- embedding_metadata,table,"CREATE TABLE embedding_metadata (
+--     id INTEGER REFERENCES embeddings(id),
+--     key TEXT NOT NULL,
+--     string_value TEXT,
+--     int_value INTEGER,
+--     float_value REAL, bool_value INTEGER,
+--     PRIMARY KEY (id, key)
+-- )"
+-- embedding_metadata_float_value,index,"CREATE INDEX embedding_metadata_float_value ON embedding_metadata (key, float_value) WHERE float_value IS NOT NULL"
+-- embedding_metadata_int_value,index,"CREATE INDEX embedding_metadata_int_value ON embedding_metadata (key, int_value) WHERE int_value IS NOT NULL"
+-- embedding_metadata_string_value,index,"CREATE INDEX embedding_metadata_string_value ON embedding_metadata (key, string_value) WHERE string_value IS NOT NULL"
+-- embeddings,table,"CREATE TABLE embeddings (
+--     id INTEGER PRIMARY KEY,
+--     segment_id TEXT NOT NULL,
+--     embedding_id TEXT NOT NULL,
+--     seq_id BLOB NOT NULL,
+--     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+--     UNIQUE (segment_id, embedding_id)
+-- )"
+-- embeddings_queue,table,"CREATE TABLE embeddings_queue (
+--     seq_id INTEGER PRIMARY KEY,
+--     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+--     operation INTEGER NOT NULL,
+--     topic TEXT NOT NULL,
+--     id TEXT NOT NULL,
+--     vector BLOB,
+--     encoding TEXT,
+--     metadata TEXT
+-- )"
+-- embeddings_queue_config,table,"CREATE TABLE embeddings_queue_config (
+--     id INTEGER PRIMARY KEY,
+--     config_json_str TEXT
+-- )"
+-- maintenance_log,table,"CREATE TABLE maintenance_log (
+--   id INT PRIMARY KEY,
+--   timestamp INT NOT NULL,
+--   operation TEXT NOT NULL
+-- )"
+-- max_seq_id,table,"CREATE TABLE max_seq_id (
+--     segment_id TEXT PRIMARY KEY,
+--     seq_id INTEGER)"
+-- migrations,table,"CREATE TABLE migrations (
+--                 dir TEXT NOT NULL,
+--                 version INTEGER NOT NULL,
+--                 filename TEXT NOT NULL,
+--                 sql TEXT NOT NULL,
+--                 hash TEXT NOT NULL,
+--                 PRIMARY KEY (dir, version)
+--             )"
+-- segment_metadata,table,"CREATE TABLE segment_metadata (
+--     segment_id TEXT  REFERENCES segments(id) ON DELETE CASCADE,
+--     key TEXT NOT NULL,
+--     str_value TEXT,
+--     int_value INTEGER,
+--     float_value REAL, bool_value INTEGER,
+--     PRIMARY KEY (segment_id, key)
+-- )"
+-- segments,table,"CREATE TABLE ""segments"" (
+--     id TEXT PRIMARY KEY,
+--     type TEXT NOT NULL,
+--     scope TEXT NOT NULL,
+--     collection TEXT REFERENCES collection(id) NOT NULL
+-- )"
+-- sqlite_autoindex_collection_metadata_1,index,
+-- sqlite_autoindex_collections_1,index,
+-- sqlite_autoindex_collections_2,index,
+-- sqlite_autoindex_databases_1,index,
+-- sqlite_autoindex_databases_2,index,
+-- sqlite_autoindex_embedding_metadata_1,index,
+-- sqlite_autoindex_embeddings_1,index,
+-- sqlite_autoindex_maintenance_log_1,index,
+-- sqlite_autoindex_max_seq_id_1,index,
+-- sqlite_autoindex_migrations_1,index,
+-- sqlite_autoindex_segment_metadata_1,index,
+-- sqlite_autoindex_segments_1,index,
+-- sqlite_autoindex_tenants_1,index,
+-- tenants,table,"CREATE TABLE tenants (
+--     id TEXT PRIMARY KEY,
+--     UNIQUE (id)
+-- )"
+
+-- Queries per table
+-- collection
+SELECT id, name, dimension, database_id
+FROM collections
+LIMIT 10;
+--output:
+-- c4f86dff-0560-4e52-a83d-0a624863390e,security_memory,384,00000000-0000-0000-0000-000000000000
+
+
+-- segments
+SELECT id, type, scope, collection
+FROM segments
+LIMIT 10;
+--output:
+-- 31bbe9f0-ad87-4d1e-8ba0-8c2762294ed4,urn:chroma:segment/vector/hnsw-local-persisted,VECTOR,c4f86dff-0560-4e52-a83d-0a624863390e
+-- 86b024f3-0cbb-48f1-bb20-4441117a036c,urn:chroma:segment/metadata/sqlite,METADATA,c4f86dff-0560-4e52-a83d-0a624863390e
+
+-- embeddings
+SELECT id, segment_id, embedding_id, length(seq_id) AS seq_bytes, created_at
+FROM embeddings
+LIMIT 10;
+--output:
+-- 1,86b024f3-0cbb-48f1-bb20-4441117a036c,1aea0c86-bf68-4887-a060-bc52fe33d153,1,2025-09-21 06:41:29
+-- 2,86b024f3-0cbb-48f1-bb20-4441117a036c,d8a63802-b4fe-4664-870e-1b10574c3c16,1,2025-09-21 06:41:30
+-- 3,86b024f3-0cbb-48f1-bb20-4441117a036c,d4438a7f-0d47-449a-b5df-ad5a5bd03ae8,1,2025-09-21 06:41:30
+-- 4,86b024f3-0cbb-48f1-bb20-4441117a036c,7c6d4470-d69b-425c-90f6-24bef80cff81,1,2025-09-21 06:41:30
+-- 5,86b024f3-0cbb-48f1-bb20-4441117a036c,b3401f55-9927-426e-a521-6ce470a7dde3,1,2025-09-21 06:41:30
+-- 6,86b024f3-0cbb-48f1-bb20-4441117a036c,91da81ca-a508-4bb5-8ea4-bcdfd7998cc1,1,2025-09-21 06:41:30
+-- 7,86b024f3-0cbb-48f1-bb20-4441117a036c,aca5ab70-707a-4c4f-9a79-7a83d8bc9be2,1,2025-09-21 06:41:30
+-- 8,86b024f3-0cbb-48f1-bb20-4441117a036c,8d9ad87c-a4ae-4ab3-a440-6ea92ec9a8ca,1,2025-09-21 06:41:30
+-- 9,86b024f3-0cbb-48f1-bb20-4441117a036c,9efb499c-4eb7-4ddb-af97-8029f7a3c796,1,2025-09-21 06:41:30
+-- 10,86b024f3-0cbb-48f1-bb20-4441117a036c,e7104961-4620-4277-9212-eb741e3b6f12,2,2025-09-21 06:41:30
+
+-- embedding_metadata
+SELECT id, key, string_value, int_value, float_value, bool_value
+FROM embedding_metadata
+LIMIT 10;
+-- output:
+-- 1,mime_type,MemoryMimeType.TEXT,,,
+-- 1,part,headers,,,
+-- 1,suspicious,,,,1
+-- 1,id,1-headers,,,
+-- 1,suspicious_tags,"['sql_injection', 'cmd_injection']",,,
+-- 1,chunk_type,headers,,,
+-- 1,suspicion_score,,5,,
+-- 1,chroma:document,"POST https: //[REDACTED_JWT]/[ATTACK:$]rpc/[REDACTED_JWT].v1.MeetingSpaceService/SyncMeetingSpaceCollections HTTP/1.1
+-- host: [REDACTED_JWT]
+-- User-Agent: Mozilla/5.0 [ATTACK:(]X11[ATTACK:[ATTACK:;] ]Linux x86_64[ATTACK:[ATTACK:;] ]rv:142.0[ATTACK:) ]Gecko/[REDACTED_TOKEN] Firefox/142.0
+-- Accept: */*
+-- Accept-Language: en-US,en[ATTACK:[ATTACK:;]]q=0.5
+-- Content-Type: application/x-protobuf
+-- Content-Length: 99
+-- Referer: https://[REDACTED_JWT]/uqc-vvdb-xse
+-- x-compass-routing-destination: AHSoBRXflWitVAj3GE61EYHcLmQrWYtG1mJszudXkXYOLgitxsw-isVS3z_jQQh1U_RfRCONRDPFnBoft8eLlSe5f_geXTomuGllqQWes-UVnkg=
+-- x-goog-api-key: [REDACTED]
+-- x-goog-authuser: 0
+-- x-goog-encode-response-if-executable: base64
+-- x-goog-meeting-debugid: boq_hlane_ZxJpSYnhA2u
+-- x-goog-meeting-identifier: CAMSDGR1N1RHTE1KYlNjQg==
+-- x-goog-meeting-rtcclient: CAEQqgMYASABKAg4AQ==
+-- x-goog-meeting-token: [REDACTED]
+-- Origin: https://[REDACTED_JWT]
+-- DNT: 1
+-- Sec-GPC: 1
+-- Sec-Fetch-Dest: empty
+-- Sec-Fetch-Mode: cors
+-- Sec-Fetch-Site: same-origin
+-- authorization: [REDACTED]
+-- Connection: keep-alive
+-- Cookie: [REDACTED]
+-- Priority: u=4
+-- spaces/du7TGLMJbScB
+-- ,
+-- -""
+-- **
+-- 2
+-- : 
+-- B
+-- J
+-- *R
+-- *Z
+-- *b
+-- *r
+-- *z
+-- *",,,
+-- 1,group_id,1,,,
+-- 1,type,traffic,,,
+
+-- embedding_fulltext_search
+SELECT rowid, substr(string_value, 1, 80) || '...' AS text_snippet
+FROM embedding_fulltext_search
+LIMIT 10;
+--output:
+-- 1,POST https: //[REDACTED_JWT]/[ATTACK:$]rpc/[REDACTED_JWT].v1.MeetingSpaceService...
+-- 2,"spaces/du7TGLMJbScB , -"" ** 2 : B J *R *Z *..."
+-- 3,"GET https: //[REDACTED_JWT] HTTP/1.1
+-- host: [REDACTED_JWT]
+-- User-Agent: Mozilla/5...."
+-- 4,"GET https: //[REDACTED_JWT]/[ATTACK:$]rpc HTTP/1.1
+-- host: [REDACTED_JWT]
+-- User-Age..."
+-- 5,GET https: //[REDACTED_JWT]/[ATTACK:$]rpc/[REDACTED_JWT].v1.MeetingSpaceService ...
+-- 6,POST https: //[REDACTED_JWT]/[ATTACK:$]rpc/[REDACTED_JWT].v1.MediaSessionService...
+-- 7,*mediasessions/klDiZ3R1NIenJwoKAAiKYigCIAQQ...
+-- 8,GET https: //[REDACTED_JWT]/[ATTACK:$]rpc/[REDACTED_JWT].v1.MediaSessionService ...
+-- 9,POST https: //[REDACTED_JWT]/[ATTACK:$]rpc/[REDACTED_JWT].v1.MeetingSpaceService...
+-- 10,"spaces/du7TGLMJbScB ,  Z *..."
+
+-- collection_metadata
+SELECT * FROM collection_metadata LIMIT 5;
+--output:
+-- c4f86dff-0560-4e52-a83d-0a624863390e,distance_metric,cosine,,,
+
+-- segment_metadata
+SELECT * FROM segment_metadata LIMIT 5;
+-- output:
+-- nothing

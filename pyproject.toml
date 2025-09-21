@@ -1,0 +1,27 @@
+[project]
+name = "zap-rag-security-agent"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "entropy",email = "arunmozhivarman97010@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.13,<4.0"
+dependencies = [
+    "zaproxy (>=0.4.0,<0.5.0)",
+    "pyautogen[chromadb] (>=0.10.0,<0.11.0)",
+    "sentence-transformers (>=5.1.0,<6.0.0)",
+    "aiohttp (>=3.12.15,<4.0.0)",
+    "aiofiles (>=24.1.0,<25.0.0)",
+    "openai (>=1.108.1,<2.0.0)",
+    "tiktoken (>=0.11.0,<0.12.0)",
+    "python-wappalyzer (==0.3.1)",
+    "requests (==2.31.0)"
+]
+
+[tool.poetry]
+packages = [{include = "zap_rag_security_agent", from = "src"}]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

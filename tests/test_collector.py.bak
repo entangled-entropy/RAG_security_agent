@@ -1,0 +1,29 @@
+"""
+automated pytest safety net
+ensures collection has >0 docs
+Verifies baseline OWASP docs are always seeded properly.
+queries with "SQL injection" and checks at least one doc mentions "Injection"
+"""
+
+import pytest
+import chromadb
+
+PERSIST_PATH = "./chroma_data"
+COLLECTION_NAME = "security_memory"
+
+@pytest.fixture
+def collection():
+    client = chromadb.PersistentClient(path=PERSIST_PATH)
+    return client.get_collection(COLLECTION_NAME)
+
+def test_collection_exists(collection):
+    assert collection.count() > 0, "Collection is empty!"
+
+def test_baseline_docs_present(collection):
+    results = collection.query(
+        query_texts=["SQL injection"],
+        n_results=3
+    )
+    docs = results["documents"][0]
+    assert any("Injection" in d for d in docs), "Baseline OWASP docs not found."
+
