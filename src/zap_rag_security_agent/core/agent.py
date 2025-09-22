@@ -65,8 +65,7 @@ class SecurityAnalysisAgent:
             "Pay special attention to client-side JavaScript analysis results, "
             "including obfuscated code, suspicious patterns, and custom scripts. "
             "Provide concise, actionable answers."
-            "check library version is outdated or has known exploits and CVEs and show me"
-            "do your own research and check whether its really safe or vulnerable, do not take the tags and scores for granted"
+            "if there are any exploits and CVEs for the version, list those"
         )
     
     async def initialize(self) -> None:
