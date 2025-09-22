@@ -1,0 +1,118 @@
+-- database: /home/entropy/playground/detoxio/RAG_security_agent/chroma_data/chroma.sqlite3
+
+-- Sanity counts
+SELECT COUNT(*) AS total_embeddings FROM embeddings;
+SELECT COUNT(*) AS total_metadata_rows FROM embedding_metadata;
+
+-- Distinct metadata keys
+SELECT DISTINCT key FROM embedding_metadata ORDER BY key;
+
+-- Collections / segments context
+SELECT id, name, dimension, database_id FROM collections;
+SELECT id, type, scope, collection FROM segments;
+
+-- Pick one embedding and inspect its metadata (change id as needed)
+SELECT * FROM embedding_metadata WHERE id = 11;
+
+-- Parts per request (path/query/headers/body/full/response)
+SELECT m.string_value AS part, COUNT(*) AS count
+FROM embedding_metadata m
+WHERE m.key = 'part'
+GROUP BY m.string_value
+ORDER BY count DESC;
+
+-- group_id distribution (one per original request)
+SELECT string_value AS group_id, COUNT(*) AS chunks
+FROM embedding_metadata
+WHERE key = 'group_id'
+GROUP BY string_value
+ORDER BY CAST(string_value AS INTEGER) DESC
+LIMIT 20;
+
+-- One doc’s raw content by id
+SELECT string_value AS document
+FROM embedding_metadata
+WHERE id = 11 AND key = 'chroma:document';
+
+-- Count baseline vs traffic docs
+SELECT COUNT(*) AS baseline_count
+FROM embedding_metadata
+WHERE key = 'type' AND string_value = 'baseline';
+
+SELECT COUNT(*) AS traffic_count
+FROM embedding_metadata
+WHERE key = 'type' AND string_value = 'traffic';
+
+-- Newest N request group_ids
+SELECT DISTINCT string_value AS group_id
+FROM embedding_metadata
+WHERE key = 'group_id'
+ORDER BY CAST(string_value AS INTEGER) DESC
+LIMIT 10;
+
+-- Reconstruct all parts for a specific request group (replace :group)
+-- -- Example in sqlite3 shell: .param set group 134
+-- SELECT part_meta.string_value AS part,
+--        efs.string_value AS text
+-- FROM embedding_metadata part_meta
+-- JOIN embedding_fulltext_search efs ON part_meta.id = efs.rowid
+-- JOIN embedding_metadata group_meta ON group_meta.id = part_meta.id AND group_meta.key = 'group_id'
+-- WHERE part_meta.key = 'part' AND group_meta.string_value = :group
+-- ORDER BY CASE LOWER(part_meta.string_value)
+--     WHEN 'full' THEN 0
+--     WHEN 'path' THEN 1
+--     WHEN 'query' THEN 2
+--     WHEN 'headers' THEN 3
+--     WHEN 'body' THEN 4
+--     ELSE 5 END,
+    -- part_meta.string_value;
+
+-- Latest metadata rows (by max id)
+SELECT id, key, string_value
+FROM embedding_metadata
+WHERE id IN (SELECT MAX(id) FROM embedding_metadata);
+
+-- All headers captured for a request group (replace :group)
+-- SELECT m2.string_value AS headers
+-- FROM embedding_metadata m1
+-- JOIN embedding_metadata m2 ON m1.id = m2.id
+-- WHERE m1.key = 'part' AND m1.string_value = 'headers'
+--   AND m2.key = 'chroma:document'
+--   AND m1.id IN (
+--       SELECT id FROM embedding_metadata
+--       WHERE key = 'group_id' AND string_value = :group
+--   );
+
+-- Full-text search on chunk text (trigram FTS)
+-- -- Example in sqlite3 shell: .param set needle Authorization
+-- SELECT rowid, substr(string_value, 1, 160) || '…' AS snippet
+-- FROM embedding_fulltext_search
+-- WHERE string_value MATCH :needle
+-- LIMIT 20;
+
+-- Suspicion-related summary (if stored by collector)
+SELECT id,
+       MAX(CASE WHEN key = 'suspicious' THEN bool_value END) AS suspicious,
+       MAX(CASE WHEN key = 'suspicion_score' THEN float_value END) AS suspicion_score,
+       MAX(CASE WHEN key = 'suspicious_tags' THEN string_value END) AS suspicious_tags
+FROM embedding_metadata
+GROUP BY id
+HAVING suspicious = 1 OR suspicion_score IS NOT NULL OR suspicious_tags IS NOT NULL
+ORDER BY COALESCE(suspicion_score, 0) DESC
+LIMIT 50;
+
+-- Per-group chunk counts and whether a 'full' part exists
+SELECT group_meta.string_value AS group_id,
+       COUNT(*) AS parts,
+       SUM(CASE WHEN part_meta.string_value = 'full' THEN 1 ELSE 0 END) AS has_full
+FROM embedding_metadata part_meta
+JOIN embedding_metadata group_meta ON group_meta.id = part_meta.id AND group_meta.key = 'group_id'
+WHERE part_meta.key = 'part'
+GROUP BY group_meta.string_value
+ORDER BY CAST(group_meta.string_value AS INTEGER) DESC
+LIMIT 50;
+
+-- Dump full metadata for a specific id (change id)
+SELECT * FROM embedding_metadata WHERE id = 2 ORDER BY key;
+
+
