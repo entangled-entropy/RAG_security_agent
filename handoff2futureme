@@ -30,3 +30,10 @@ Open issues / next steps:
 - Consider caching group_id→URL mapping to improve base_url detection.
 - Expand vulnerable function extraction to include minimal surrounding context when AST fails.
 - Add negative tests to ensure no response content is ever sent to LLM unless vulnerable script is explicitly requested.
+
+Progress (2025-09-22):
+- Fixed Chroma metadata error by ensuring `suspicious_tags` is stored as a string (no lists) in `zap_collector.py` analysis summaries.
+- DB stats for schematic search sanity:
+  - chroma_data: total embeddings=728, distinct group_id (requests)=82, avg chunks/request≈8.88.
+  - chroma_data_sep20_bak: total embeddings=1965, distinct group_id=127, avg≈15.47. Backup has more chunks and higher chunks/request.
+- Client-side script detection flow: `script_extractor.py` → `client_script_analyzer.py` (flags: `is_suspicious`, `reasons`, etc.) → stored by `zap_collector._analyze_client_scripts` with primitive metadata.

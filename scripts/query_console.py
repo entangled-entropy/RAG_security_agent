@@ -37,16 +37,14 @@ async def main():
                 print(f"[INFO] Found {len(group_ids)} unique group_ids")
                 for i, gid in enumerate(group_ids[:5], 1):
                     msg = agent.reconstruct_http_message_with_analysis(gid)
-                    # Ensure [ANALYSIS] visibility and confirm no response body present
-                    has_analysis = ("[ANALYSIS]" in msg) or ("[CLIENT-SIDE SCRIPT ANALYSIS]" in msg)
-                    shows_response = ("=== RESPONSE ===" in msg) or ("[RESP_" in msg.upper())
                     print(f"\n--- Result {i} (group_id={gid}) ---")
-                    if not has_analysis:
-                        print("[WARN] No [ANALYSIS] block for this group.")
-                    if shows_response:
-                        print("[WARN] Response content detected in reconstruction (should be omitted).")
-                    # Highlight vulnerable/outdated tags if present in metadata via memory query terms
+                    # Show request + analysis
                     print(msg[:2000])
+                    # Show a limited response snippet
+                    resp_snip = agent.get_response_snippet(gid, max_chars=500)
+                    if resp_snip:
+                        print("\n[RESPONSE SNIPPET] (first 500 chars)")
+                        print(resp_snip)
                     print()
             except (KeyboardInterrupt, EOFError):
                 print("\n[*] Interrupted. Exiting.")

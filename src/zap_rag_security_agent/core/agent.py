@@ -226,6 +226,57 @@ class SecurityAnalysisAgent:
         
         return "\n".join(out_lines)
     
+    def get_response_snippet(self, group_id: str, db_path: Optional[str] = None, max_chars: int = 500) -> str:
+        """
+        Fetch and return a truncated response body snippet for a given group.
+
+        Args:
+            group_id: Group ID to fetch response for
+            db_path: Path to ChromaDB SQLite database
+            max_chars: Maximum number of characters to return
+
+        Returns:
+            A string containing up to max_chars of the response body, or an empty string if none found.
+        """
+        if db_path is None:
+            db_path = f"{self.persist_path}/chroma.sqlite3"
+
+        try:
+            conn = sqlite3.connect(db_path)
+            cur = conn.cursor()
+
+            sql_template = """
+            SELECT efs.{fts_col} AS text
+            FROM embedding_metadata part_meta
+            JOIN embedding_fulltext_search efs ON part_meta.id = efs.rowid
+            JOIN embedding_metadata group_meta
+              ON group_meta.id = part_meta.id AND group_meta.key = 'group_id'
+            WHERE part_meta.key = 'part'
+              AND group_meta.string_value = ?
+              AND LOWER(part_meta.string_value) = 'resp_body'
+            ORDER BY part_meta.string_value;
+            """
+
+            rows = []
+            for fts_col in ("string_value", "content"):
+                try:
+                    sql = sql_template.format(fts_col=fts_col)
+                    cur.execute(sql, (str(group_id),))
+                    rows = cur.fetchall()
+                    break
+                except sqlite3.OperationalError:
+                    continue
+            conn.close()
+
+            if not rows:
+                return ""
+
+            # Concatenate all pieces of the response body, then truncate
+            resp_text = "\n".join((t or "").strip() for (t,) in rows if (t or "").strip())
+            return resp_text[: max(0, max_chars)] if resp_text else ""
+        except Exception:
+            return ""
+
     def reconstruct_client_script_analysis(self, group_id: str, db_path: Optional[str] = None) -> str:
         """
         Reconstruct client-side script analysis results for a group.
@@ -566,9 +617,19 @@ class SecurityAnalysisAgent:
         
         # Reconstruct each group with analysis data (request-only summary)
         reconstructed = [self.reconstruct_http_message_with_analysis(gid) for gid in group_ids]
+
+        # Attach up to 500 chars of response snippet for each group
+        reconstructed_with_resp = []
+        for gid, base_msg in zip(group_ids, reconstructed):
+            snippet = self.get_response_snippet(gid, max_chars=500)
+            if snippet:
+                combined = base_msg + "\n\n[RESPONSE_SNIPPET] (first 500 chars)\n" + snippet
+            else:
+                combined = base_msg
+            reconstructed_with_resp.append(combined)
         
         # Show samples
-        for i, msg in enumerate(reconstructed[:2], 1):
+        for i, msg in enumerate(reconstructed_with_resp[:2], 1):
             print(f"\n[DEBUG] Reconstructed sample {i}:\n{msg[:600]}...\n")
         
         if not reconstructed:
@@ -631,11 +692,12 @@ class SecurityAnalysisAgent:
                 "Analyze the following HTTP traffic for vulnerabilities. "
                 "The traffic includes analysis metadata showing detected technologies, "
                 "version information, security assessments, and client-side script analysis. "
-                "Only requests and analysis summaries are included (no response bodies). "
+                "Each item may also include the first 500 characters of the response body "
+                "as a snippet for additional context. "
                 "Pay special attention to any suspicious or obfuscated JavaScript code, "
                 "custom scripts with high complexity, and potential security vulnerabilities "
                 "in client-side code:\n\n" +
-                "\n\n---\n\n".join(reconstructed[:3])
+                "\n\n---\n\n".join(reconstructed_with_resp[:3])
             )
         
         # Run assistant
