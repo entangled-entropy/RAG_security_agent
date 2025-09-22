@@ -18,6 +18,8 @@ from autogen_ext.memory.chromadb import (
 )
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 
+from ..detectors.client_script_analyzer import ClientScriptAnalyzer
+
 
 class SecurityAnalysisAgent:
     """
@@ -32,7 +34,7 @@ class SecurityAnalysisAgent:
         persist_path: str = "./chroma_data",
         collection_name: str = "security_memory",
         model: str = "gpt-4o",
-        k: int = 5,
+        k: int = 3,
         score_threshold: float = 0.3
     ):
         """
@@ -54,13 +56,17 @@ class SecurityAnalysisAgent:
         self.memory: Optional[ChromaDBVectorMemory] = None
         self.model_client: Optional[OpenAIChatCompletionClient] = None
         self.assistant_agent: Optional[AssistantAgent] = None
+        self.script_analyzer: Optional[ClientScriptAnalyzer] = None
         
         self.system_prompt = (
             "You are SecurityAnalysisAgent, a security analyst. "
             "Use memory context to detect vulnerabilities, exposed secrets, "
             "outdated components, and suspicious patterns. "
+            "Pay special attention to client-side JavaScript analysis results, "
+            "including obfuscated code, suspicious patterns, and custom scripts. "
             "Provide concise, actionable answers."
-            "check library version is outdated or has known exploits and CVEs and alert"
+            "check library version is outdated or has known exploits and CVEs and show me"
+            "do your own research and check whether its really safe or vulnerable, do not take the tags and scores for granted"
         )
     
     async def initialize(self) -> None:
@@ -90,6 +96,9 @@ class SecurityAnalysisAgent:
             system_message=self.system_prompt,
         )
         
+        # Initialize script analyzer for on-demand analysis
+        self.script_analyzer = ClientScriptAnalyzer()
+        
         print("[+] Security Analysis Agent initialized successfully")
     
     async def query_memory(self, query: str) -> List[Dict[str, Any]]:
@@ -118,7 +127,7 @@ class SecurityAnalysisAgent:
             print(f"[ERROR] Error querying ChromaDB: {e}")
             return []
     
-    def reconstruct_http_message(self, group_id: str, db_path: Optional[str] = None) -> str:
+    def reconstruct_http_message(self, group_id: str, db_path: Optional[str] = None, include_body: bool = False) -> str:
         """
         Reconstruct a complete HTTP message from stored parts.
         
@@ -175,6 +184,9 @@ class SecurityAnalysisAgent:
             if not t:
                 continue
             p = part.lower()
+            # Strictly skip any response parts to avoid leaking responses
+            if p.startswith("resp_") or p in ("resp_path", "resp_query", "resp_headers", "resp_body"):
+                continue
             if p == "path":
                 if path is None:
                     path = t
@@ -189,7 +201,7 @@ class SecurityAnalysisAgent:
             else:
                 other_parts.append((p, t))
         
-        # Build output
+        # Build output (request-only summary by default; omit BODY to reduce tokens)
         out_lines = []
         if path:
             out_lines.append("[PATH]")
@@ -203,14 +215,97 @@ class SecurityAnalysisAgent:
         if headers_lines:
             out_lines.append("[HEADERS]")
             out_lines.extend(headers_lines)
-        if body:
+        if include_body and body:
             out_lines.append("[BODY]")
             out_lines.append(body)
         for p, t in other_parts:
+            if p.startswith("resp_"):
+                continue
             out_lines.append(f"[{p.upper()}]")
             out_lines.append(t)
         
         return "\n".join(out_lines)
+    
+    def reconstruct_client_script_analysis(self, group_id: str, db_path: Optional[str] = None) -> str:
+        """
+        Reconstruct client-side script analysis results for a group.
+        
+        Args:
+            group_id: Group ID to reconstruct
+            db_path: Path to ChromaDB SQLite database
+            
+        Returns:
+            Reconstructed client-side script analysis
+        """
+        if db_path is None:
+            db_path = f"{self.persist_path}/chroma.sqlite3"
+        
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        
+        # Query for client script analysis
+        script_sql = """
+        SELECT 
+            m1.key,
+            m1.string_value,
+            m1.float_value,
+            m1.int_value
+        FROM embedding_metadata m1
+        JOIN embedding_metadata group_meta 
+          ON group_meta.id = m1.id AND group_meta.key = 'group_id'
+        WHERE group_meta.string_value = ?
+          AND m1.key IN (
+              'script_id', 'script_url', 'script_type', 'analysis_confidence',
+              'is_suspicious', 'is_obfuscated', 'is_custom', 'complexity_score',
+              'suspicion_density', 'reasons'
+          )
+        ORDER BY m1.key;
+        """
+        
+        cur.execute(script_sql, (str(group_id),))
+        script_rows = cur.fetchall()
+        conn.close()
+        
+        if not script_rows:
+            return ""
+        
+        # Group by script_id
+        scripts = {}
+        for key, string_val, float_val, int_val in script_rows:
+            value = string_val if string_val is not None else (float_val if float_val is not None else int_val)
+            if value is not None:
+                # Extract script_id from the row to group related metadata
+                # This is a simplified approach - in practice, you'd need to join with the actual content
+                if key == 'script_id':
+                    script_id = value
+                    if script_id not in scripts:
+                        scripts[script_id] = {}
+                elif 'script_id' in locals():
+                    scripts[script_id][key] = value
+        
+        if not scripts:
+            return ""
+        
+        # Build script analysis section
+        analysis_lines = []
+        analysis_lines.append("\n[CLIENT-SIDE SCRIPT ANALYSIS]")
+        
+        for script_id, script_data in scripts.items():
+            analysis_lines.append(f"\nScript ID: {script_id}")
+            analysis_lines.append(f"URL: {script_data.get('script_url', 'N/A')}")
+            analysis_lines.append(f"Type: {script_data.get('script_type', 'N/A')}")
+            analysis_lines.append(f"Confidence: {script_data.get('analysis_confidence', 0.0):.2f}")
+            analysis_lines.append(f"Suspicious: {'Yes' if script_data.get('is_suspicious') else 'No'}")
+            analysis_lines.append(f"Obfuscated: {'Yes' if script_data.get('is_obfuscated') else 'No'}")
+            analysis_lines.append(f"Custom: {'Yes' if script_data.get('is_custom') else 'No'}")
+            analysis_lines.append(f"Complexity Score: {script_data.get('complexity_score', 0.0):.2f}")
+            analysis_lines.append(f"Suspicion Density: {script_data.get('suspicion_density', 0.0):.2f}")
+            
+            reasons = script_data.get('reasons', '[]')
+            if reasons and reasons != '[]':
+                analysis_lines.append(f"Analysis Reasons: {reasons}")
+        
+        return "\n".join(analysis_lines)
     
     def reconstruct_http_message_with_analysis(self, group_id: str, db_path: Optional[str] = None) -> str:
         """
@@ -229,8 +324,8 @@ class SecurityAnalysisAgent:
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
         
-        # First, get the basic HTTP message
-        http_message = self.reconstruct_http_message(group_id, db_path)
+        # First, get the basic HTTP message (request-only summary)
+        http_message = self.reconstruct_http_message(group_id, db_path, include_body=False)
         
         # Query for analysis metadata
         analysis_sql = """
@@ -375,11 +470,38 @@ class SecurityAnalysisAgent:
                 error = analysis_data['stack_detection_error']
                 analysis_lines.append(f"Stack Detection Error: {error}")
         
-        # Combine HTTP message and analysis
+        # Add client-side script analysis
+        script_analysis = self.reconstruct_client_script_analysis(group_id, db_path)
+        
+        # Combine HTTP message and analysis (no response bodies)
         if analysis_lines:
-            return http_message + "\n".join(analysis_lines)
+            result = http_message + "\n".join(analysis_lines)
         else:
-            return http_message
+            result = http_message
+        
+        if script_analysis:
+            result += script_analysis
+        
+        return result
+    
+    async def analyze_client_scripts(self, html_content: str, base_url: str = "") -> Dict[str, Any]:
+        """
+        Analyze client-side JavaScript in HTML content.
+        
+        Args:
+            html_content: HTML content to analyze
+            base_url: Base URL for resolving relative script URLs
+            
+        Returns:
+            Analysis results from the client script analyzer
+        """
+        if not self.script_analyzer:
+            return {"error": "Script analyzer not initialized"}
+        
+        try:
+            return self.script_analyzer.analyze_html_response(html_content, base_url)
+        except Exception as e:
+            return {"error": f"Script analysis failed: {e}"}
     
     def display_documents(self, documents: List[Dict[str, Any]], limit: int = 5, reconstruct: bool = False, with_analysis: bool = True) -> None:
         """
@@ -442,7 +564,7 @@ class SecurityAnalysisAgent:
         
         print(f"[INFO] Found {len(group_ids)} unique group_ids from results")
         
-        # Reconstruct each group with analysis data
+        # Reconstruct each group with analysis data (request-only summary)
         reconstructed = [self.reconstruct_http_message_with_analysis(gid) for gid in group_ids]
         
         # Show samples
@@ -455,13 +577,66 @@ class SecurityAnalysisAgent:
         
         print(f"[INFO] Sending {len(reconstructed)} reconstructed docs to OpenAI")
         
-        # Build task for OpenAI with enhanced context
-        task = (
-            "Analyze the following HTTP traffic for vulnerabilities. "
-            "The traffic includes analysis metadata showing detected technologies, "
-            "version information, and security assessments:\n\n" +
-            "\n\n---\n\n".join(reconstructed[:3])  # limit to avoid token explosion
-        )
+        # If query explicitly asks for vulnerable script, only send targeted JS snippets
+        def wants_vulnerable_script(q: str) -> bool:
+            ql = (q or "").lower()
+            return ("script" in ql or "javascript" in ql or "js" in ql) and ("vulnerab" in ql or "suspicious" in ql or "malicious" in ql)
+
+        if wants_vulnerable_script(query):
+            targeted_prompts: List[str] = []
+            try:
+                # Only in this mode we touch response bodies to extract scripts
+                for gid in group_ids[:3]:
+                    full_msg = self.reconstruct_http_message(gid, include_body=True)
+                    headers_section = []
+                    body_text = ""
+                    lines = full_msg.splitlines()
+                    mode = None
+                    for line in lines:
+                        if line.strip() == "[HEADERS]":
+                            mode = "headers"
+                            continue
+                        if line.strip() == "[BODY]":
+                            mode = "body"
+                            continue
+                        if line.startswith("[") and line.endswith("]"):
+                            mode = None
+                            continue
+                        if mode == "headers":
+                            headers_section.append(line)
+                        elif mode == "body":
+                            body_text += ("\n" if body_text else "") + line
+                    is_html = any(h.lower().startswith("content-type") and "html" in h.lower() for h in headers_section) or ("<script" in body_text.lower())
+                    if is_html and self.script_analyzer:
+                        host = None
+                        for h in headers_section:
+                            if h.lower().startswith("host:"):
+                                host = h.split(":", 1)[1].strip()
+                                break
+                        base_url = f"http://{host}" if host else ""
+                        analysis = await asyncio.get_running_loop().run_in_executor(None, self.script_analyzer.analyze_html_response, body_text, base_url)
+                        scripts_for_llm = (analysis or {}).get('scripts_for_llm') or []
+                        for script in scripts_for_llm[:3]:
+                            targeted_prompts.append(self.script_analyzer.get_llm_analysis_prompt(script))
+            except Exception:
+                targeted_prompts = []
+
+            if not targeted_prompts:
+                print("[INFO] No vulnerable scripts detected to send.")
+                return
+            task = "\n\n---\n\n".join(targeted_prompts)
+        else:
+            # Build task for OpenAI without any response bodies
+            task = (
+                "Analyze the following HTTP traffic for vulnerabilities. "
+                "The traffic includes analysis metadata showing detected technologies, "
+                "version information, security assessments, and client-side script analysis. "
+                "Only requests and analysis summaries are included (no response bodies). "
+                "Pay special attention to any suspicious or obfuscated JavaScript code, "
+                "custom scripts with high complexity, and potential security vulnerabilities "
+                "in client-side code:\n\n" +
+                "\n\n---\n\n".join(reconstructed[:3])
+            )
         
         # Run assistant
         stream = self.assistant_agent.run_stream(task=task)

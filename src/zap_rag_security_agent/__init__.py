@@ -24,15 +24,40 @@ __version__ = "0.1.0"
 __author__ = "entropy"
 __email__ = "arunmozhivarman97010@gmail.com"
 
-from .core.agent import SecurityAnalysisAgent
-from .collectors.zap_collector import ZAPCollector
-from .detectors.stack_detector import StackDetector
+# Import core components that don't require external dependencies
 from .preprocessing.normalizer import normalize_chunk_text, preprocess_payload
 
+# Import stack detector only if Wappalyzer is available
+try:
+    from .detectors.stack_detector import StackDetector
+    _stack_detector_available = True
+except ImportError:
+    _stack_detector_available = False
+
+# Import collector only if zapv2 is available
+try:
+    from .collectors.zap_collector import ZAPCollector
+    _collector_available = True
+except ImportError:
+    _collector_available = False
+
+# Import agent only if autogen is available
+try:
+    from .core.agent import SecurityAnalysisAgent
+    _agent_available = True
+except ImportError:
+    _agent_available = False
+
 __all__ = [
-    "SecurityAnalysisAgent",
-    "ZAPCollector", 
-    "StackDetector",
     "normalize_chunk_text",
     "preprocess_payload",
 ]
+
+if _stack_detector_available:
+    __all__.append("StackDetector")
+
+if _collector_available:
+    __all__.append("ZAPCollector")
+
+if _agent_available:
+    __all__.append("SecurityAnalysisAgent")

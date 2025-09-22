@@ -426,8 +426,16 @@ def normalize_chunk_text(chunk_text: str, chunk_type: str = None) -> Tuple[str, 
                         "version": top_component.get("version", ""),
                         "type": top_component.get("type", ""),
                         "confidence": top_component.get("confidence", 0.0),
-                        "is_vulnerable": top_component.get("vulnerability_check", {}).get("is_vulnerable", False)
+                        "is_vulnerable": top_component.get("is_vulnerable", False),
+                        "is_outdated": top_component.get("is_outdated", False),
+                        "security_status": top_component.get("security_status", "unknown")
                     }
+                    # Tagging for search
+                    name_lower = meta["top_component"]["name"].lower()
+                    if meta["top_component"].get("is_vulnerable") and name_lower:
+                        meta["suspicious_tags"].append(f"vulnerable:{name_lower}")
+                    if meta["top_component"].get("is_outdated") and name_lower:
+                        meta["suspicious_tags"].append(f"outdated:{name_lower}")
                 
                 # Add component candidates (flattened)
                 component_candidates = stack_result.get("component_candidates", [])
@@ -438,10 +446,29 @@ def normalize_chunk_text(chunk_text: str, chunk_type: str = None) -> Tuple[str, 
                             "version": comp.get("version", ""),
                             "category": comp.get("category", ""),
                             "confidence": comp.get("confidence", 0.0),
-                            "is_vulnerable": comp.get("vulnerability_check", {}).get("is_vulnerable", False)
+                            "is_vulnerable": comp.get("is_vulnerable", False),
+                            "is_outdated": comp.get("is_outdated", False)
                         }
                         for comp in component_candidates[:10]  # Limit to first 10
                     ])
+                    # Add tags for each candidate to aid search
+                    for comp in component_candidates:
+                        nm = (comp.get("name") or "").lower()
+                        if not nm:
+                            continue
+                        if comp.get("is_vulnerable"):
+                            meta["suspicious_tags"].append(f"vulnerable:{nm}")
+                        if comp.get("is_outdated"):
+                            meta["suspicious_tags"].append(f"outdated:{nm}")
+
+                # Add outdated components summary for reconstruction and searchability
+                outdated_components = stack_result.get("outdated_components", [])
+                if outdated_components:
+                    meta["outdated_components"] = json.dumps(outdated_components[:10])
+                    # Also add generic tags for quick text filtering
+                    meta["suspicious_tags"].append("outdated")
+                    if any(oc.get("is_vulnerable") for oc in outdated_components):
+                        meta["suspicious_tags"].append("vulnerable")
             
             # Add security analysis (regardless of whether technologies were detected)
             if stack_result:

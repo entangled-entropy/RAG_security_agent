@@ -15,8 +15,11 @@ Features:
 import asyncio
 import time
 import urllib.parse
-from typing import Dict, List, Any, Generator
-from zapv2 import ZAPv2
+from typing import Dict, List, Any, Generator, Optional
+try:
+    from zapv2 import ZAPv2
+except Exception:  # pragma: no cover
+    ZAPv2 = None
 
 from autogen_ext.memory.chromadb import (
     ChromaDBVectorMemory,
@@ -26,6 +29,8 @@ from autogen_ext.memory.chromadb import (
 from autogen_core.memory import MemoryContent, MemoryMimeType
 
 from ..preprocessing.normalizer import normalize_chunk_text
+from ..preprocessing.script_extractor import ScriptExtractor
+from ..detectors.client_script_analyzer import ClientScriptAnalyzer
 from ..data.baseline import BASELINE_DOCS
 
 
@@ -43,7 +48,9 @@ class ZAPCollector:
         persist_path: str = "./chroma_data",
         collection_name: str = "security_memory",
         batch_size: int = 50,
-        poll_interval: float = 0.2
+        poll_interval: float = 0.2,
+        enable_script_analysis: bool = True,
+        script_analysis_config: Optional[Dict[str, Any]] = None
     ):
         """
         Initialize the ZAP Collector.
@@ -54,20 +61,28 @@ class ZAPCollector:
             collection_name: Name of the ChromaDB collection
             batch_size: Batch size for processing historical messages
             poll_interval: Polling interval for new messages (seconds)
+            enable_script_analysis: Whether to enable client-side script analysis
+            script_analysis_config: Configuration for script analysis
         """
         self.zap_api_url = zap_api_url
         self.persist_path = persist_path
         self.collection_name = collection_name
         self.batch_size = batch_size
         self.poll_interval = poll_interval
+        self.enable_script_analysis = enable_script_analysis
+        self.script_analysis_config = script_analysis_config or {}
         
         self.memory: ChromaDBVectorMemory = None
         self.zap: ZAPv2 = None
+        self.script_analyzer: Optional[ClientScriptAnalyzer] = None
     
     async def initialize(self) -> None:
         """Initialize the collector and its components."""
         print("[*] Initializing ZAP Collector...")
         
+        if not ZAPv2:
+            raise ConnectionError("python-owasp-zap-v2.4 is not installed. Install it or skip ZAP-dependent tests.")
+
         # Initialize ChromaDB memory
         config = PersistentChromaDBVectorMemoryConfig(
             collection_name=self.collection_name,
@@ -91,6 +106,11 @@ class ZAPCollector:
         except Exception as e:
             raise ConnectionError(f"Failed to connect to ZAP at {self.zap_api_url}: {e}")
         
+        # Initialize script analyzer if enabled
+        if self.enable_script_analysis:
+            self.script_analyzer = ClientScriptAnalyzer(self.script_analysis_config)
+            print("[+] Client-side script analyzer initialized")
+        
         print("[+] ZAP Collector initialized successfully")
     
     async def seed_baseline(self) -> None:
@@ -110,6 +130,63 @@ class ZAPCollector:
                 pass
         
         print("[+] Baseline seeding complete")
+    
+    async def _analyze_client_scripts(self, resp_text: str, group_id: str, base_url: str = "") -> List[Dict[str, Any]]:
+        """
+        Analyze client-side JavaScript in HTTP responses.
+        
+        Args:
+            resp_text: HTTP response text
+            group_id: Group ID for the message
+            
+        Returns:
+            List of script analysis results
+        """
+        if not self.script_analyzer or not resp_text:
+            return []
+        
+        try:
+            # Extract HTML content from response
+            if "\r\n\r\n" in resp_text:
+                html_content = resp_text.split("\r\n\r\n", 1)[1]
+            elif "\n\n" in resp_text:
+                html_content = resp_text.split("\n\n", 1)[1]
+            else:
+                html_content = resp_text
+            
+            # Analyze scripts
+            analysis_result = self.script_analyzer.analyze_html_response(html_content, base_url)
+            
+            # Store analysis results as separate memory entries
+            script_entries = []
+            for script in analysis_result.get('scripts_for_llm', []):
+                script_meta = {
+                    "type": "client_script_analysis",
+                    "group_id": group_id,
+                    "script_id": script.get('id', ''),
+                    "script_url": script.get('url', ''),
+                    "script_type": script.get('type', ''),
+                    "analysis_confidence": script.get('analysis', {}).get('confidence', 0.0),
+                    "is_suspicious": script.get('analysis', {}).get('is_suspicious', False),
+                    "is_obfuscated": script.get('analysis', {}).get('is_obfuscated', False),
+                    "is_custom": script.get('analysis', {}).get('is_custom', False),
+                    "complexity_score": script.get('analysis', {}).get('complexity_score', 0.0),
+                    "suspicion_density": script.get('analysis', {}).get('suspicion_density', 0.0),
+                    "reasons": str(script.get('analysis', {}).get('reasons', [])),
+                }
+                
+                script_content = MemoryContent(
+                    content=script.get('content', ''),
+                    mime_type=MemoryMimeType.TEXT,
+                    metadata=script_meta,
+                )
+                script_entries.append(script_content)
+            
+            return script_entries
+            
+        except Exception as e:
+            print(f"[!] Error analyzing client scripts for group {group_id}: {e}")
+            return []
     
     def _parse_request_first_line(self, request_header: str) -> tuple:
         """Parse HTTP request first line into method, URL, and version."""
@@ -274,9 +351,134 @@ class ZAPCollector:
                     metadata=meta,
                 )
                 tasks.append(self.memory.add(content))
+
+                # Add an analysis summary document to improve retrievability for queries like
+                # "outdated library" or "vulnerable versions" by indexing keywords in content.
+                analysis_summary_lines = []
+                # Top component summary
+                top_comp = chunk.get("meta", {}).get("top_component") if isinstance(chunk.get("meta"), dict) else None
+                if isinstance(top_comp, dict) and (top_comp.get("name") or top_comp.get("version")):
+                    name = top_comp.get("name", "")
+                    version = top_comp.get("version", "")
+                    is_vuln = top_comp.get("is_vulnerable", False)
+                    is_outdated = top_comp.get("is_outdated", False)
+                    status_terms = []
+                    if is_vuln:
+                        status_terms.append("vulnerable")
+                    if is_outdated:
+                        status_terms.append("outdated")
+                    if status_terms:
+                        analysis_summary_lines.append(
+                            f"Component {name} {version} is {' and '.join(status_terms)} (security issue)."
+                        )
+                # Candidates and outdated components
+                comp_candidates_json = chunk.get("meta", {}).get("component_candidates") if isinstance(chunk.get("meta"), dict) else None
+                if comp_candidates_json:
+                    try:
+                        import json as _json
+                        candidates = _json.loads(comp_candidates_json) if isinstance(comp_candidates_json, str) else comp_candidates_json
+                    except Exception:
+                        candidates = []
+                    for comp in (candidates or [])[:5]:
+                        nm = comp.get("name", "")
+                        ver = comp.get("version", "")
+                        tags = []
+                        if comp.get("is_vulnerable"):
+                            tags.append("vulnerable")
+                        if comp.get("is_outdated"):
+                            tags.append("outdated")
+                        if tags:
+                            analysis_summary_lines.append(
+                                f"Component {nm} {ver} is {' and '.join(tags)} (security issue)."
+                            )
+                outdated_components_json = chunk.get("meta", {}).get("outdated_components") if isinstance(chunk.get("meta"), dict) else None
+                if outdated_components_json:
+                    try:
+                        import json as _json
+                        outdated_list = _json.loads(outdated_components_json) if isinstance(outdated_components_json, str) else outdated_components_json
+                    except Exception:
+                        outdated_list = []
+                    for comp in (outdated_list or [])[:5]:
+                        nm = comp.get("name", "")
+                        ver = comp.get("version", "")
+                        latest = comp.get("latest_version", "")
+                        is_v = comp.get("is_vulnerable", False)
+                        status = "vulnerable" if is_v else "outdated"
+                        analysis_summary_lines.append(
+                            f"Component {nm} {ver} -> {latest} is {status} (security issue)."
+                        )
+
+                # Only create one summary per request based on headers to avoid duplicates
+                if analysis_summary_lines and chunk.get("part") == ("req_headers" if prefix == "req_" else "req_headers"):
+                    summary_text = "[ANALYSIS SUMMARY]\n" + "\n".join(analysis_summary_lines)
+                    summary_meta = {
+                        "type": "analysis",
+                        "group_id": chunk["group_id"],
+                        "part": "analysis",
+                        "id": f"{group_id}-analysis-{chunk['part']}",
+                        "suspicious": True,
+                        # Ensure primitives only for ChromaDB metadata (no lists)
+                        "suspicious_tags": str(((chunk.get("meta", {}) or {}).get("suspicious_tags", []) + ["security issues", "vulnerable", "outdated"])),
+                    }
+                    tasks.append(self.memory.add(MemoryContent(
+                        content=summary_text,
+                        mime_type=MemoryMimeType.TEXT,
+                        metadata=summary_meta,
+                    )))
         
         # Process response
         if resp_text:
+            # Only analyze scripts for HTML responses
+            is_html = False
+            try:
+                header_section = resp_text.split("\r\n\r\n", 1)[0]
+            except Exception:
+                header_section = resp_text
+            for line in header_section.splitlines():
+                if line.lower().startswith("content-type:") and "text/html" in line.lower():
+                    is_html = True
+                    break
+
+            # Determine the base URL from the request (if present)
+            page_url = ""
+            try:
+                # Try to extract URL from the special first line format
+                first_line = req_text.splitlines()[0] if req_text else ""
+                if first_line.startswith("[Request]"):
+                    parts = first_line.split()
+                    page_url = parts[2] if len(parts) > 2 else ""
+                else:
+                    # Fallback: try extracting Host header and path
+                    host = ""
+                    path = "/"
+                    for line in req_text.splitlines():
+                        if line.lower().startswith("host:"):
+                            host = line.split(":", 1)[1].strip()
+                            break
+                    # Try to find request line like: GET /path HTTP/1.1
+                    for line in req_text.splitlines():
+                        if line.startswith("GET ") or line.startswith("POST ") or line.startswith("PUT ") or line.startswith("DELETE "):
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                path = parts[1]
+                            break
+                    # Normalize absolute/authority-relative cases
+                    if path.startswith("http://") or path.startswith("https://"):
+                        page_url = path
+                    elif path.startswith("//"):
+                        page_url = f"https:{path}"
+                    elif path.startswith("https:/") and not path.startswith("https://"):
+                        page_url = "https://" + path[len("https:/"):]
+                    elif path.startswith("http:/") and not path.startswith("http://"):
+                        page_url = "http://" + path[len("http:/"):]
+                    elif host:
+                        scheme = "https"  # default to https if unknown
+                        if not path.startswith("/"):
+                            path = "/" + path
+                        page_url = f"{scheme}://{host}{path}"
+            except Exception:
+                page_url = ""
+            
             for chunk in self._chunk_message(resp_text, group_id, prefix="resp_"):
                 # Merge chunk metadata with collector metadata
                 meta = {
@@ -298,6 +500,83 @@ class ZAPCollector:
                     metadata=meta,
                 )
                 tasks.append(self.memory.add(content))
+
+                # Also add analysis summary for response-derived analysis to boost retrievability
+                analysis_summary_lines = []
+                top_comp = chunk.get("meta", {}).get("top_component") if isinstance(chunk.get("meta"), dict) else None
+                if isinstance(top_comp, dict) and (top_comp.get("name") or top_comp.get("version")):
+                    name = top_comp.get("name", "")
+                    version = top_comp.get("version", "")
+                    is_vuln = top_comp.get("is_vulnerable", False)
+                    is_outdated = top_comp.get("is_outdated", False)
+                    status_terms = []
+                    if is_vuln:
+                        status_terms.append("vulnerable")
+                    if is_outdated:
+                        status_terms.append("outdated")
+                    if status_terms:
+                        analysis_summary_lines.append(
+                            f"Component {name} {version} is {' and '.join(status_terms)} (security issue)."
+                        )
+                comp_candidates_json = chunk.get("meta", {}).get("component_candidates") if isinstance(chunk.get("meta"), dict) else None
+                if comp_candidates_json:
+                    try:
+                        import json as _json
+                        candidates = _json.loads(comp_candidates_json) if isinstance(comp_candidates_json, str) else comp_candidates_json
+                    except Exception:
+                        candidates = []
+                    for comp in (candidates or [])[:5]:
+                        nm = comp.get("name", "")
+                        ver = comp.get("version", "")
+                        tags = []
+                        if comp.get("is_vulnerable"):
+                            tags.append("vulnerable")
+                        if comp.get("is_outdated"):
+                            tags.append("outdated")
+                        if tags:
+                            analysis_summary_lines.append(
+                                f"Component {nm} {ver} is {' and '.join(tags)} (security issue)."
+                            )
+                outdated_components_json = chunk.get("meta", {}).get("outdated_components") if isinstance(chunk.get("meta"), dict) else None
+                if outdated_components_json:
+                    try:
+                        import json as _json
+                        outdated_list = _json.loads(outdated_components_json) if isinstance(outdated_components_json, str) else outdated_components_json
+                    except Exception:
+                        outdated_list = []
+                    for comp in (outdated_list or [])[:5]:
+                        nm = comp.get("name", "")
+                        ver = comp.get("version", "")
+                        latest = comp.get("latest_version", "")
+                        is_v = comp.get("is_vulnerable", False)
+                        status = "vulnerable" if is_v else "outdated"
+                        analysis_summary_lines.append(
+                            f"Component {nm} {ver} -> {latest} is {status} (security issue)."
+                        )
+
+                # Only create one summary per response based on headers to avoid duplicates
+                if analysis_summary_lines and chunk.get("part") == "resp_headers":
+                    summary_text = "[ANALYSIS SUMMARY]\n" + "\n".join(analysis_summary_lines)
+                    summary_meta = {
+                        "type": "analysis",
+                        "group_id": chunk["group_id"],
+                        "part": "analysis",
+                        "id": f"{group_id}-analysis-{chunk['part']}",
+                        "suspicious": True,
+                        # Ensure primitives only for ChromaDB metadata (no lists)
+                        "suspicious_tags": str(((chunk.get("meta", {}) or {}).get("suspicious_tags", []) + ["security issues", "vulnerable", "outdated"])),
+                    }
+                    tasks.append(self.memory.add(MemoryContent(
+                        content=summary_text,
+                        mime_type=MemoryMimeType.TEXT,
+                        metadata=summary_meta,
+                    )))
+            
+            # Analyze client-side scripts if enabled and content looks like HTML
+            if self.enable_script_analysis and is_html:
+                script_entries = await self._analyze_client_scripts(resp_text, group_id, base_url=page_url)
+                for script_entry in script_entries:
+                    tasks.append(self.memory.add(script_entry))
         
         if tasks:
             await asyncio.gather(*tasks)

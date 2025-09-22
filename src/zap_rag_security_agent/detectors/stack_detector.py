@@ -18,7 +18,11 @@ import json
 import requests
 from typing import Dict, List, Tuple, Optional, Any
 from urllib.parse import urlparse
-from Wappalyzer import Wappalyzer, WebPage
+try:
+    from Wappalyzer import Wappalyzer, WebPage
+except Exception:  # pragma: no cover
+    Wappalyzer = None
+    WebPage = None
 from ..data.version_database import get_version_database
 
 
@@ -30,7 +34,7 @@ class StackDetector:
     
     def __init__(self):
         """Initialize the Wappalyzer instance."""
-        self.wappalyzer = Wappalyzer.latest()
+        self.wappalyzer = Wappalyzer.latest() if Wappalyzer else None
         self.version_db = get_version_database()
         
         # Security patterns for credential detection
@@ -79,19 +83,19 @@ class StackDetector:
                     key, value = line.split(':', 1)
                     headers[key.strip().lower()] = value.strip()
             
-            # Create a mock response object for Wappalyzer
-            class MockResponse:
-                def __init__(self, headers, url=""):
-                    self.headers = headers
-                    self.url = url
-                    self.text = ""
-                    self.status_code = 200
-            
-            response = MockResponse(headers, url)
-            webpage = WebPage.new_from_response(response)
-            
-            # Analyze with Wappalyzer
-            results = self.wappalyzer.analyze_with_versions_and_categories(webpage)
+            results = {}
+            if self.wappalyzer and WebPage:
+                # Create a mock response object for Wappalyzer
+                class MockResponse:
+                    def __init__(self, headers, url=""):
+                        self.headers = headers
+                        self.url = url
+                        self.text = ""
+                        self.status_code = 200
+                response = MockResponse(headers, url)
+                webpage = WebPage.new_from_response(response)
+                # Analyze with Wappalyzer
+                results = self.wappalyzer.analyze_with_versions_and_categories(webpage) or {}
             
             # If Wappalyzer didn't detect anything, try client-side detection
             if not results:
@@ -270,21 +274,74 @@ class StackDetector:
             return self._empty_result()
         
         try:
-            # Create a mock response object for Wappalyzer
-            class MockResponse:
-                def __init__(self, html, url=""):
-                    self.headers = {}
-                    self.url = url
-                    self.text = html
-                    self.status_code = 200
-            
-            response = MockResponse(html_content, url)
-            webpage = WebPage.new_from_response(response)
-            
-            # Analyze with Wappalyzer
-            results = self.wappalyzer.analyze_with_versions_and_categories(webpage)
-            
-            return self._process_wappalyzer_results(results, "html")
+            # First try Wappalyzer if available
+            if self.wappalyzer and WebPage:
+                class MockResponse:
+                    def __init__(self, html, url=""):
+                        self.headers = {}
+                        self.url = url
+                        self.text = html
+                        self.status_code = 200
+                response = MockResponse(html_content, url)
+                webpage = WebPage.new_from_response(response)
+                results = self.wappalyzer.analyze_with_versions_and_categories(webpage) or {}
+                processed = self._process_wappalyzer_results(results, "html")
+                if processed.get("total_detected", 0) > 0:
+                    return processed
+
+            # Fallback: lightweight HTML parsing of script srcs and meta tags
+            script_srcs = []
+            try:
+                # Simple regex for script src (avoids heavy deps)
+                import re as _re
+                script_srcs = _re.findall(r'<script[^>]*src=["\']([^"\']+)["\']', html_content, _re.IGNORECASE)
+            except Exception:
+                script_srcs = []
+
+            meta_content = ""
+            try:
+                # Collect generator/meta tags
+                import re as _re
+                metas = _re.findall(r'<meta[^>]+>', html_content, _re.IGNORECASE)
+                meta_content = "\n".join(metas)
+            except Exception:
+                meta_content = ""
+
+            combined = {
+                "headers": {},
+                "html": {},
+                "scripts": {},
+                "meta": {},
+                "post_data": {}
+            }
+
+            # Use existing helpers to assemble a combined result-like structure
+            scripts_res = self.detect_from_script_src(script_srcs)
+            meta_res = self.detect_from_meta_tags(meta_content)
+
+            # Aggregate
+            all_technologies = {}
+            all_standard_libs = scripts_res.get("standard_libraries", [])
+            all_custom_libs = scripts_res.get("custom_libraries", [])
+            detection_methods = []
+            if scripts_res.get("total_detected", 0) > 0:
+                detection_methods.append("script_src")
+            if meta_res.get("total_detected", 0) > 0:
+                detection_methods.append("meta_tags")
+
+            confidence = 0.0
+            if detection_methods:
+                confidence = max(scripts_res.get("confidence", 0.0), meta_res.get("confidence", 0.0))
+
+            return {
+                "detected_technologies": all_technologies,
+                "standard_libraries": all_standard_libs,
+                "custom_libraries": all_custom_libs,
+                "outdated_components": [],
+                "detection_method": ",".join(detection_methods) if detection_methods else "html_fallback",
+                "confidence": confidence,
+                "total_detected": len(all_standard_libs) + len(all_custom_libs)
+            }
             
         except Exception as e:
             return self._error_result(f"HTML analysis failed: {str(e)}")
@@ -726,6 +783,33 @@ class StackDetector:
             "total_detected": 0,
             "error": error_msg
         }
+
+    # -------------------------
+    # Public helpers for tests
+    # -------------------------
+    def detect_versions_from_results(self, results: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Given a Wappalyzer-like results dict, extract {tech_name: version} map.
+        """
+        versions = {}
+        if not results:
+            return versions
+        for tech_name, tech_data in results.items():
+            if isinstance(tech_data, dict):
+                versions[tech_name] = (tech_data.get('versions') or [''])[0]
+        return versions
+
+    def detect_vulnerable_script_from_text(self, script_text: str) -> List[str]:
+        """
+        Return list of matched vulnerable patterns keys from a script's text.
+        """
+        if not script_text:
+            return []
+        matches = []
+        for key, pattern in self.vulnerable_patterns.items():
+            if pattern.search(script_text):
+                matches.append(key)
+        return matches
 
 
 def detect_stack_from_traffic(headers_text: str = "", html_content: str = "", 

