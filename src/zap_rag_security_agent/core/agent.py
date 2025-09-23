@@ -620,7 +620,7 @@ class SecurityAnalysisAgent:
         # Attach up to 500 chars of response snippet for each group
         reconstructed_with_resp = []
         for gid, base_msg in zip(group_ids, reconstructed):
-            snippet = self.get_response_snippet(gid, max_chars=500)
+            snippet = self.get_response_snippet(gid, max_chars=1000)
             if snippet:
                 combined = base_msg + "\n\n[RESPONSE_SNIPPET] (first 500 chars)\n" + snippet
             else:

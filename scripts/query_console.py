@@ -41,7 +41,7 @@ async def main():
                     # Show request + analysis
                     print(msg[:2000])
                     # Show a limited response snippet
-                    resp_snip = agent.get_response_snippet(gid, max_chars=500)
+                    resp_snip = agent.get_response_snippet(gid, max_chars=1000)
                     if resp_snip:
                         print("\n[RESPONSE SNIPPET] (first 500 chars)")
                         print(resp_snip)
