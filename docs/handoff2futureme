@@ -1,0 +1,40 @@
+# Handoff to future me
+
+What we changed today:
+- Core agent never sends response bodies to LLM. Only requests + analysis summaries.
+- When the user explicitly asks for vulnerable scripts, we extract only the suspicious JS function(s) and send those to LLM.
+- JS parser gained helpers to extract enclosing/first function from source via AST ranges.
+- Client script analyzer now builds prompts from targeted functions instead of whole scripts.
+
+Testing strategy reset:
+- Moved old, likely-broken unit tests to `.safetodelete/tests/`.
+- Added integration tests that require a running OWASP ZAP with recorded traffic (no mocks).
+  - tests/test_collector_integration.py: normalization + chunking using ZAP traffic; DB-less chunk verification.
+  - tests/test_stack_and_scripts.py: version detection from HTML; vulnerable script pattern detection from real scripts.
+  - tests/test_schematic_queries_integration.py: smoke of schematic queries against Chroma DB populated by collector.
+
+How to run:
+1) Start OWASP ZAP locally and browse a target to populate history (or run a ZAP spider/scan).
+2) Ensure env vars if needed:
+   - ZAP_API_URL (default http://localhost:8090)
+   - PERSIST_PATH (default chroma_data in repo)
+3) Run collector to populate DB:
+   - source ~/detoxio/bin/activate
+   - python run_collector.py (Ctrl+C to stop)
+4) Run tests:
+   - pytest -q tests
+
+Open issues / next steps:
+- Some imports show warnings (autogen_*, zapv2) when env lacks deps; ensure poetry/venv has correct packages.
+- Collector currently writes response chunks to DB; acceptable, but LLM path avoids responses by design.
+- Consider caching group_id→URL mapping to improve base_url detection.
+- Expand vulnerable function extraction to include minimal surrounding context when AST fails.
+- Add negative tests to ensure no response content is ever sent to LLM unless vulnerable script is explicitly requested.
+
+Progress (2025-09-22):
+- Fixed Chroma metadata error by ensuring `suspicious_tags` is stored as a string (no lists) in `zap_collector.py` analysis summaries.
+- DB stats for schematic search sanity:
+  - chroma_data: total embeddings=728, distinct group_id (requests)=82, avg chunks/request≈8.88.
+  - chroma_data_sep20_bak: total embeddings=1965, distinct group_id=127, avg≈15.47. Backup has more chunks and higher chunks/request.
+- Client-side script detection flow: `script_extractor.py` → `client_script_analyzer.py` (flags: `is_suspicious`, `reasons`, etc.) → stored by `zap_collector._analyze_client_scripts` with primitive metadata.
+- Baseline ingestion: not automatic. `ZAPCollector.seed_baseline()` exists but is commented out in `main()`. `examples/basic_usage.py` calls it. Enable by uncommenting the call in `zap_collector.main` or invoking it before collection.
