@@ -16,19 +16,19 @@ http://forum.wampserver.com/read.php?2,13744
 https://dvwa.exp-9.com/login.php
 
 # HTML with vulnerable inline JS
-http://localhost:8088/
+http://localhost:4321/
 
 # Vulnerable external JS
-http://localhost:8088/static/app.js
+http://localhost:4321/static/app.js
 
 # Exposes API keys/secrets (JSON)
-http://localhost:8088/api/keys
+http://localhost:4321/api/keys
 
 # Echoes username/password query params
-http://localhost:8088/api/login
+http://localhost:4321/api/login
 
 # Hints to hidden paths
-http://localhost:8088/robots.txt
+http://localhost:4321/robots.txt
 
 admin' --
 admin' #

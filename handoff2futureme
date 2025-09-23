@@ -37,3 +37,4 @@ Progress (2025-09-22):
   - chroma_data: total embeddings=728, distinct group_id (requests)=82, avg chunks/request≈8.88.
   - chroma_data_sep20_bak: total embeddings=1965, distinct group_id=127, avg≈15.47. Backup has more chunks and higher chunks/request.
 - Client-side script detection flow: `script_extractor.py` → `client_script_analyzer.py` (flags: `is_suspicious`, `reasons`, etc.) → stored by `zap_collector._analyze_client_scripts` with primitive metadata.
+- Baseline ingestion: not automatic. `ZAPCollector.seed_baseline()` exists but is commented out in `main()`. `examples/basic_usage.py` calls it. Enable by uncommenting the call in `zap_collector.main` or invoking it before collection.
