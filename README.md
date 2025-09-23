@@ -73,7 +73,7 @@ Notes:
 	- Metadata enrichment: We attach fields like `group_id`, `part`, suspicion metrics, stack detection, component candidates, and summarized security findings. All metadata is stored as primitives for efficient filtering.
 
 
-2.  **Schematic search engine (how it’s built and why)**
+2.  **Schematic search engine**
 
 	- Storage: ChromaDB persistent store with an embedding model (`all-MiniLM-L6-v2`) for semantic retrieval.
 	
@@ -82,7 +82,7 @@ Notes:
 	- This Hybrid (semantic + structured) search yields high precision for questions like “show requests with outdated libraries” or “paths that include suspicious query parameters”.
 
 
-3.  **RAG agent design (methods and rationale)**
+3.  **RAG agent design**
 
 	- Retriever: Top‑k semantic results (with a score threshold) from Chroma.
 	
